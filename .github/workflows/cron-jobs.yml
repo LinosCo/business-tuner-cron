@@ -1,0 +1,1033 @@
+# =============================================================================
+# Cron Jobs Scheduler — Voler Suite Monorepo
+# =============================================================================
+#
+# Ported from ai-interviewer/.github/workflows/cron-jobs.yml (the pattern that
+# was running in production on Railway Hobby). Extended to cover every
+# `/api/cron/**` route across the four apps in this monorepo: BT, ST, CT, ET.
+#
+# Required GitHub Secrets (see .github/workflows/README.md):
+#   - CRON_SECRET       Bearer token, must match each app's CRON_SECRET env var
+#   - BT_DEPLOY_URL     https://… base URL of business-tuner deploy
+#   - ST_DEPLOY_URL     https://… base URL of strategy-tuner deploy
+#   - CT_DEPLOY_URL     https://… base URL of content-tuner deploy
+#   - ET_DEPLOY_URL     https://… base URL of experience-tuner deploy
+#   - SLACK_CRON_WEBHOOK (optional) Slack incoming webhook for failure alerts
+#
+# All times are UTC. Defensive design:
+#   - `nick-fields/retry@v3` retries each curl 3× with exponential backoff
+#   - `concurrency: cron-<job>` prevents overlapping runs of the same job
+#   - On failure a Slack notification fires (if SLACK_CRON_WEBHOOK is set)
+#
+# GH Actions cron has a ~5-15 min jitter — schedule with that in mind.
+#
+# Kill-switch: st-cron-preflight fetches /api/cron/pause-status and exposes
+# `all` + `paused[]`. Each SCHEDULED ST job is tagged with a category
+# (signals | market | tips | billing | maintenance) and self-skips when its
+# category — or "all" — is paused. Manual workflow_dispatch runs ALWAYS run.
+# A new scheduled job MUST be tagged in its `if` or it runs unconditionally.
+# =============================================================================
+
+name: Cron Jobs
+
+on:
+  schedule:
+    # ── High-Frequency Jobs ──────────────────────────────────────────────
+    - cron: '*/10 * * * *' # Every 10 min — signal classification retry
+    - cron: '*/15 * * * *' # Every 15 min — dispatch scheduled (ST + CT)
+    - cron: '0 */2 * * *'  # Every 2h — signal ingestion proactive
+    - cron: '0 */6 * * *'  # Every 6h — signal ingestion full + ET visit ingest
+
+    # ── Daily Jobs ────────────────────────────────────────────────────────
+    - cron: '0 0 * * *'    # 00:00 UTC — reset credits
+    - cron: '30 0 * * *'   # 00:30 UTC — idempotency cleanup
+    - cron: '0 1 * * *'    # 01:00 UTC — audit log cleanup
+    - cron: '0 2 * * *'    # 02:00 UTC — aggregate chatbot analytics
+    - cron: '30 2 * * *'   # 02:30 UTC — backup DB
+    - cron: '0 3 * * *'    # 03:00 UTC — CMS sync analytics
+    - cron: '30 3 * * *'   # 03:30 UTC — run-all (tip lifecycle + breach + performance)
+    - cron: '0 4 * * *'    # 04:00 UTC — performance snapshot + check alerts
+    - cron: '30 4 * * *'   # 04:30 UTC — interview quality alerts
+    - cron: '0 5 * * *'    # 05:00 UTC — signal ingestion trends
+    - cron: '0 6 * * *'    # 06:00 UTC — tip verify
+    - cron: '30 6 * * *'   # 06:30 UTC — gap-to-content
+    - cron: '0 7 * * *'    # 07:00 UTC — signal cleanup
+    - cron: '0 8 * * *'    # 08:00 UTC — tip retry failed
+    - cron: '30 8 * * *'   # 08:30 UTC — oauth token refresh
+    - cron: '0 9 * * *'    # 09:00 UTC — breach deadline alerts (separate from run-all)
+    - cron: '0 10 * * *'   # 10:00 UTC — performance backfill
+    - cron: '0 11 * * *'   # 11:00 UTC — signals/reclassify-pending
+
+    # ── Every 3 days ──────────────────────────────────────────────────────
+    - cron: '0 12 */3 * *' # Every 3 days 12:00 UTC — market themes + positioning
+
+    # ── Weekly Jobs (Sunday) ──────────────────────────────────────────────
+    - cron: '0 4 * * 0'    # Sunday 04:00 — detect gaps
+
+    # ── Weekly Jobs (Monday) ──────────────────────────────────────────────
+    - cron: '0 4 * * 1'    # Monday 04:00 — sync insights
+    - cron: '0 6 * * 1'    # Monday 06:00 — cms-generate-suggestions
+    - cron: '0 8 * * 1'    # Monday 08:00 — serp monitoring
+    - cron: '0 10 * * 1'   # Monday 10:00 — kb-growth
+
+    # ── Monthly Jobs (1st of month) ───────────────────────────────────────
+    - cron: '30 0 1 * *'   # 1st 00:30 — reset monthly counters
+    - cron: '0 1 1 * *'    # 1st 01:00 — partner fees
+
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which cron job to run manually'
+        required: true
+        type: choice
+        options:
+          - all
+          # ST jobs
+          - st-dispatch-scheduled
+          - st-signal-classify-retry
+          - st-signal-ingestion-fast
+          - st-signal-ingestion-full
+          - st-signal-ingestion-trends
+          - st-signal-ingestion-proactive
+          - st-signal-cleanup
+          - st-signals-reclassify-pending
+          - st-reset-credits
+          - st-reset-monthly-counters
+          - st-aggregate-chatbot-analytics
+          - st-backup-db
+          - st-audit-log-cleanup
+          - st-idempotency-cleanup
+          - st-cms-sync-analytics
+          - st-cms-generate-suggestions
+          - st-check-alerts
+          - st-detect-gaps
+          - st-gap-to-content
+          - st-sync-insights
+          - st-serp-monitoring
+          - st-market-themes
+          - st-kb-growth
+          - st-tip-verify
+          - st-tip-lifecycle
+          - st-tip-performance
+          - st-tip-retry-failed
+          - st-performance-snapshot
+          - st-performance-backfill
+          - st-oauth-token-refresh
+          - st-breach-deadline-alerts
+          - st-partner-fees
+          - st-interview-quality-alerts
+          - st-ingest-et-visits
+          - st-run-all
+          # CT jobs
+          - ct-dispatch-scheduled
+
+env:
+  CURL_OPTS: '--fail --silent --show-error --max-time 300'
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════
+  # Preflight — reads the admin cron-pause state once per run (fail-open).
+  # Every scheduled ST job gates on its outputs.
+  # ═══════════════════════════════════════════════════════════════════════
+  st-cron-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      all: ${{ steps.fetch.outputs.all }}
+      paused: ${{ steps.fetch.outputs.paused }}
+    steps:
+      - name: Fetch cron pause state
+        id: fetch
+        shell: bash
+        run: |
+          resp=$(curl --fail --silent --show-error --max-time 20 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.ST_DEPLOY_URL }}/api/cron/pause-status" || echo '')
+          if [ -z "$resp" ]; then
+            echo "::warning::pause-status unreachable — fail-open (nothing paused)"
+            echo "all=false" >> "$GITHUB_OUTPUT"
+            echo "paused=[]" >> "$GITHUB_OUTPUT"
+          else
+            echo "all=$(echo "$resp" | jq -r '.all')" >> "$GITHUB_OUTPUT"
+            echo "paused=$(echo "$resp" | jq -c '.categories')" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Strategy Tuner — every 15min: dispatch scheduled ProjectTipItems
+  # ═══════════════════════════════════════════════════════════════════════
+  st-dispatch-scheduled:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-dispatch-scheduled' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '*/15 * * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'tips'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: cron-st-dispatch-scheduled
+      cancel-in-progress: false
+    steps:
+      - name: Dispatch Scheduled (ST)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/dispatch-scheduled"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Content Tuner — every 15min: dispatch ContentDrafts to connectors
+  # ═══════════════════════════════════════════════════════════════════════
+  ct-dispatch-scheduled:
+    if: >-
+      github.event.schedule == '*/15 * * * *' ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'ct-dispatch-scheduled' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: cron-ct-dispatch-scheduled
+      cancel-in-progress: false
+    steps:
+      - name: Dispatch Scheduled (CT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} \
+              -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              -H "Content-Type: application/json" \
+              "${{ secrets.CT_DEPLOY_URL }}/api/cron/dispatch-scheduled"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Every 10 min — signal classification retry
+  # ═══════════════════════════════════════════════════════════════════════
+  st-signal-classify-retry:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-classify-retry' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '*/10 * * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: cron-st-signal-classify-retry
+      cancel-in-progress: false
+    steps:
+      - name: Signal Classify Retry
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/signal-classify-retry"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Every 2h — signal ingestion proactive auto-publish
+  # ═══════════════════════════════════════════════════════════════════════
+  st-signal-ingestion-proactive:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-ingestion-proactive' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 */2 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: cron-st-signal-ingestion-proactive
+      cancel-in-progress: false
+    steps:
+      - name: Signal Ingestion Proactive
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/signal-ingestion?mode=proactive"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Every 6h — signal ingestion FULL + ET visit ingest
+  # ═══════════════════════════════════════════════════════════════════════
+  st-signal-ingestion-full:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-ingestion-full' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 */6 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: cron-st-signal-ingestion-full
+      cancel-in-progress: false
+    steps:
+      - name: Signal Ingestion Full
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/signal-ingestion?mode=full"
+
+  st-ingest-et-visits:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-ingest-et-visits' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 */6 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: cron-st-ingest-et-visits
+      cancel-in-progress: false
+    steps:
+      - name: ET → ST visit ingestion
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/ingest-et-visits"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Daily jobs
+  # ═══════════════════════════════════════════════════════════════════════
+  st-reset-credits:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-reset-credits' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 0 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'billing'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency: { group: cron-st-reset-credits, cancel-in-progress: false }
+    steps:
+      - name: Reset Credits
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              -H "Content-Type: application/json" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/reset-credits"
+
+  st-idempotency-cleanup:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-idempotency-cleanup' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '30 0 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency: { group: cron-st-idempotency-cleanup, cancel-in-progress: false }
+    steps:
+      - name: Idempotency Cleanup
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/idempotency-cleanup"
+
+  st-audit-log-cleanup:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-audit-log-cleanup' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 1 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency: { group: cron-st-audit-log-cleanup, cancel-in-progress: false }
+    steps:
+      - name: Audit Log Cleanup
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/audit-log-cleanup"
+
+  st-aggregate-chatbot-analytics:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-aggregate-chatbot-analytics' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 2 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-aggregate-chatbot-analytics, cancel-in-progress: false }
+    steps:
+      - name: Aggregate Chatbot Analytics
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/aggregate-chatbot-analytics"
+
+  st-backup-db:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-backup-db' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '30 2 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: { group: cron-st-backup-db, cancel-in-progress: false }
+    steps:
+      - name: Database Backup
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/backup-db"
+
+  st-cms-sync-analytics:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-cms-sync-analytics' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 3 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: { group: cron-st-cms-sync-analytics, cancel-in-progress: false }
+    steps:
+      - name: CMS Sync Analytics
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/cms-sync-analytics"
+
+  st-run-all:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-run-all' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '30 3 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'tips'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency: { group: cron-st-run-all, cancel-in-progress: false }
+    steps:
+      - name: Run-all (lifecycle + breach + performance)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 28
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/run-all"
+
+  st-performance-snapshot:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-performance-snapshot' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 4 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-performance-snapshot, cancel-in-progress: false }
+    steps:
+      - name: Performance Snapshot
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/performance-snapshot"
+
+  st-check-alerts:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-check-alerts' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 4 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-check-alerts, cancel-in-progress: false }
+    steps:
+      - name: Check Alerts
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/check-alerts"
+
+  st-interview-quality-alerts:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-interview-quality-alerts' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '30 4 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-interview-quality-alerts, cancel-in-progress: false }
+    steps:
+      - name: Interview Quality Alerts
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/interview-quality-alerts"
+
+  st-signal-ingestion-trends:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-ingestion-trends' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 5 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: { group: cron-st-signal-ingestion-trends, cancel-in-progress: false }
+    steps:
+      - name: Signal Ingestion Trends
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/signal-ingestion?mode=trends"
+
+  st-tip-verify:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-tip-verify' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 6 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'tips'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: { group: cron-st-tip-verify, cancel-in-progress: false }
+    steps:
+      - name: Tip Verify
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/tip-verify"
+
+  st-gap-to-content:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-gap-to-content' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '30 6 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'tips'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-gap-to-content, cancel-in-progress: false }
+    steps:
+      - name: Gap to Content
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/gap-to-content"
+
+  st-signal-cleanup:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-cleanup' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 7 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-signal-cleanup, cancel-in-progress: false }
+    steps:
+      - name: Signal Cleanup
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/signal-cleanup"
+
+  st-tip-retry-failed:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-tip-retry-failed' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 8 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'tips'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: { group: cron-st-tip-retry-failed, cancel-in-progress: false }
+    steps:
+      - name: Tip Retry Failed
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/tip-retry-failed"
+
+  st-oauth-token-refresh:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-oauth-token-refresh' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '30 8 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-oauth-token-refresh, cancel-in-progress: false }
+    steps:
+      - name: OAuth Token Refresh
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/oauth-token-refresh"
+
+  st-breach-deadline-alerts:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-breach-deadline-alerts' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 9 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-breach-deadline-alerts, cancel-in-progress: false }
+    steps:
+      - name: Breach Deadline Alerts
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/breach-deadline-alerts"
+
+  st-performance-backfill:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-performance-backfill' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 10 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: { group: cron-st-performance-backfill, cancel-in-progress: false }
+    steps:
+      - name: Performance Backfill
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/performance-backfill"
+
+  st-signals-reclassify-pending:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signals-reclassify-pending' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 11 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-signals-reclassify-pending, cancel-in-progress: false }
+    steps:
+      - name: Signals Reclassify Pending
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/signals/reclassify-pending"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Tip-lifecycle + tip-performance are wrapped inside `st-run-all` (03:30).
+  # Expose them as standalone workflow_dispatch targets for manual reruns.
+  # ═══════════════════════════════════════════════════════════════════════
+  st-tip-lifecycle:
+    if: >-
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-tip-lifecycle' || github.event.inputs.job == 'all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-tip-lifecycle, cancel-in-progress: false }
+    steps:
+      - name: Tip Lifecycle
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/tip-lifecycle"
+
+  st-tip-performance:
+    if: >-
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-tip-performance' || github.event.inputs.job == 'all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: { group: cron-st-tip-performance, cancel-in-progress: false }
+    steps:
+      - name: Tip Performance
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/tip-performance"
+
+  st-signal-ingestion-fast:
+    if: >-
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-ingestion-fast' || github.event.inputs.job == 'all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-signal-ingestion-fast, cancel-in-progress: false }
+    steps:
+      - name: Signal Ingestion Fast
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/signal-ingestion?mode=fast"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Weekly jobs
+  # ═══════════════════════════════════════════════════════════════════════
+  st-detect-gaps:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-detect-gaps' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 4 * * 0'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'market'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: { group: cron-st-detect-gaps, cancel-in-progress: false }
+    steps:
+      - name: Detect Knowledge Gaps
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 18
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/detect-gaps"
+
+  st-sync-insights:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-sync-insights' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 4 * * 1'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'market'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: { group: cron-st-sync-insights, cancel-in-progress: false }
+    steps:
+      - name: Sync Cross-Channel Insights
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 18
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/sync-insights"
+
+  st-cms-generate-suggestions:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-cms-generate-suggestions' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 6 * * 1'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'tips'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: { group: cron-st-cms-generate-suggestions, cancel-in-progress: false }
+    steps:
+      - name: Generate CMS Suggestions
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 18
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/cms-generate-suggestions"
+
+  st-serp-monitoring:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-serp-monitoring' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 8 * * 1'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'market'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: { group: cron-st-serp-monitoring, cancel-in-progress: false }
+    steps:
+      - name: SERP Monitoring Scan
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 18
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/serp-monitoring"
+
+  st-kb-growth:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-kb-growth' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 10 * * 1'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'market'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: { group: cron-st-kb-growth, cancel-in-progress: false }
+    steps:
+      - name: KB Growth
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 18
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/kb-growth"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Every 3 days — market themes clustering + positioning (competitor analysis)
+  # ═══════════════════════════════════════════════════════════════════════
+  st-market-themes:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-market-themes' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 12 */3 * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'market'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: { group: cron-st-market-themes, cancel-in-progress: false }
+    steps:
+      - name: Market Themes + Positioning
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 18
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/market-themes"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Monthly jobs
+  # ═══════════════════════════════════════════════════════════════════════
+  st-reset-monthly-counters:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-reset-monthly-counters' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '30 0 1 * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'billing'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-reset-monthly-counters, cancel-in-progress: false }
+    steps:
+      - name: Reset Monthly Counters
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              -H "Content-Type: application/json" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/reset-monthly-counters"
+
+  st-partner-fees:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-partner-fees' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 1 1 * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'billing'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-st-partner-fees, cancel-in-progress: false }
+    steps:
+      - name: Calculate Partner Fees
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              -H "Content-Type: application/json" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/partner-fees"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Failure alerting — runs once after the rest of the job graph completes
+  # ═══════════════════════════════════════════════════════════════════════
+  notify-on-failure:
+    needs:
+      - st-cron-preflight
+      - st-dispatch-scheduled
+      - ct-dispatch-scheduled
+      - st-signal-classify-retry
+      - st-signal-ingestion-proactive
+      - st-signal-ingestion-full
+      - st-ingest-et-visits
+      - st-reset-credits
+      - st-idempotency-cleanup
+      - st-audit-log-cleanup
+      - st-aggregate-chatbot-analytics
+      - st-backup-db
+      - st-cms-sync-analytics
+      - st-run-all
+      - st-performance-snapshot
+      - st-check-alerts
+      - st-interview-quality-alerts
+      - st-signal-ingestion-trends
+      - st-tip-verify
+      - st-gap-to-content
+      - st-signal-cleanup
+      - st-tip-retry-failed
+      - st-oauth-token-refresh
+      - st-breach-deadline-alerts
+      - st-performance-backfill
+      - st-signals-reclassify-pending
+      - st-detect-gaps
+      - st-sync-insights
+      - st-cms-generate-suggestions
+      - st-serp-monitoring
+      - st-market-themes
+      - st-kb-growth
+      - st-reset-monthly-counters
+      - st-partner-fees
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    env:
+      SLACK_CRON_WEBHOOK: ${{ secrets.SLACK_CRON_WEBHOOK }}
+    steps:
+      - name: Notify Slack
+        run: |
+          if [ -z "${SLACK_CRON_WEBHOOK}" ]; then
+            echo "SLACK_CRON_WEBHOOK is not configured — skipping notification."
+            exit 0
+          fi
+          curl --fail --silent --show-error \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"Cron failure in ${GITHUB_REPOSITORY} (run ${GITHUB_RUN_ID}). See https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
+            "${SLACK_CRON_WEBHOOK}"
