@@ -355,6 +355,7 @@ jobs:
           retry_wait_seconds: 20
           command: |
             curl ${CURL_OPTS} \
+              -X POST \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.ST_DEPLOY_URL }}/api/cron/idempotency-cleanup"
 
@@ -663,6 +664,7 @@ jobs:
           retry_wait_seconds: 30
           command: |
             curl ${CURL_OPTS} \
+              -X POST \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.ST_DEPLOY_URL }}/api/cron/oauth-token-refresh"
 
