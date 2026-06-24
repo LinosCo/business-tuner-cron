@@ -66,7 +66,10 @@ on:
 
     # ── Weekly Jobs (Monday) ──────────────────────────────────────────────
     - cron: '0 4 * * 1'    # Monday 04:00 — sync insights
-    - cron: '0 6 * * 1'    # Monday 06:00 — cms-generate-suggestions
+    # NB: cms-generate-suggestions (was Monday 06:00) RETIRED — it generated
+    # legacy CMSSuggestion rows whose review UI was removed; the canonical
+    # suggestion stream is ProjectTip (CrossChannelInsight→tip). Manual
+    # workflow_dispatch still available.
     - cron: '0 8 * * 1'    # Monday 08:00 — serp monitoring
     - cron: '0 10 * * 1'   # Monday 10:00 — kb-growth
 
@@ -841,11 +844,10 @@ jobs:
 
   st-cms-generate-suggestions:
     needs: st-cron-preflight
+    # RETIRED from the schedule (legacy CMSSuggestion stream, UI removed) —
+    # manual workflow_dispatch only.
     if: >-
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-cms-generate-suggestions' || github.event.inputs.job == 'all'))
-      || (github.event.schedule == '0 6 * * 1'
-          && needs.st-cron-preflight.outputs.all != 'true'
-          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'tips'))
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-cms-generate-suggestions' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency: { group: cron-st-cms-generate-suggestions, cancel-in-progress: false }
