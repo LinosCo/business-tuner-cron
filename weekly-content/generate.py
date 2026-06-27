@@ -189,39 +189,41 @@ def telegram_creds():
 
 
 def send_telegram(data, posts_files, week):
-    import urllib.parse
+    import requests
     tok, chat = telegram_creds()
     if not tok or not chat:
         print("Telegram non configurato — salto l'invio.")
         return
     api = f"https://api.telegram.org/bot{tok}"
 
-    def post_form(method, fields, files=None):
-        # multipart minimale senza dipendenze esterne
-        import io, uuid
-        boundary = "----voler" + uuid.uuid4().hex
-        body = io.BytesIO()
-        for k, v in fields.items():
-            body.write(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode())
-        for k, path in (files or {}).items():
-            fn = os.path.basename(path)
-            body.write(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"; filename=\"{fn}\"\r\nContent-Type: image/png\r\n\r\n".encode())
-            body.write(open(path, "rb").read())
-            body.write(b"\r\n")
-        body.write(f"--{boundary}--\r\n".encode())
-        req = urllib.request.Request(f"{api}/{method}", data=body.getvalue(),
-                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-        return urllib.request.urlopen(req, timeout=60).read()
+    def check(r):
+        try:
+            ok = r.json().get("ok")
+        except Exception:
+            ok = False
+        if not r.ok or not ok:
+            raise RuntimeError(f"Telegram {r.status_code}: {r.text[:300]}")
 
-    post_form("sendMessage", {"chat_id": chat, "text": f"🗓️ Piano editoriale Voler.ai — settimana {week}"})
+    check(requests.post(f"{api}/sendMessage",
+                        data={"chat_id": chat, "text": f"🗓️ Piano editoriale Voler.ai — settimana {week}"},
+                        timeout=30))
     for post, files in zip(data["posts"], posts_files):
         if len(files) == 1:
-            post_form("sendPhoto", {"chat_id": chat, "caption": post["caption"]}, {"photo": files[0]})
+            with open(files[0], "rb") as fh:
+                check(requests.post(f"{api}/sendPhoto",
+                                    data={"chat_id": chat, "caption": post["caption"]},
+                                    files={"photo": fh}, timeout=60))
         else:
             media = [{"type": "photo", "media": f"attach://f{i}", **({"caption": post["caption"]} if i == 0 else {})}
                      for i in range(len(files))]
-            post_form("sendMediaGroup", {"chat_id": chat, "media": json.dumps(media, ensure_ascii=False)},
-                      {f"f{i}": files[i] for i in range(len(files))})
+            fhs = {f"f{i}": open(files[i], "rb") for i in range(len(files))}
+            try:
+                check(requests.post(f"{api}/sendMediaGroup",
+                                    data={"chat_id": chat, "media": json.dumps(media, ensure_ascii=False)},
+                                    files=fhs, timeout=90))
+            finally:
+                for fh in fhs.values():
+                    fh.close()
     print("Inviato su Telegram.")
 
 
