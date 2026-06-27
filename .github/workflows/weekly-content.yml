@@ -21,7 +21,7 @@ jobs:
         uses: browser-actions/setup-chrome@v1
 
       - name: Installa dipendenze Python
-        run: pip install --quiet anthropic
+        run: pip install --quiet anthropic requests
 
       - name: Genera piano + grafiche e invia su Telegram
         env:
