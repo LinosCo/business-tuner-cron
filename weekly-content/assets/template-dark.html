@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  /* === Voler.ai brand (estratto da volerai-next) === */
+  :root{
+    --ink:#10121B; --cloud:#F4F6F8; --citron:#D7FF3B; --cool-gray:#6B7280;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:1080px;height:1350px;}
+  body{
+    background:var(--ink); color:var(--cloud);
+    font-family:"Inter",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    position:relative; overflow:hidden;
+  }
+  /* glow citron in alto a destra, discreto */
+  body::before{
+    content:""; position:absolute; top:-280px; right:-260px;
+    width:680px; height:680px; border-radius:50%;
+    background:radial-gradient(circle, rgba(215,255,59,.16) 0%, rgba(215,255,59,0) 70%);
+  }
+  .frame{position:absolute; inset:0; padding:96px 92px; display:flex; flex-direction:column;}
+  /* header */
+  .top{display:flex; align-items:center; justify-content:space-between;}
+  .logo{height:46px;}
+  .index{font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:24px;
+    color:var(--cool-gray); letter-spacing:.06em;}
+  /* kicker */
+  .kicker{margin-top:84px; display:inline-flex; align-self:flex-start; align-items:center; gap:14px;
+    font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:24px;
+    text-transform:uppercase; letter-spacing:.16em; color:var(--citron);}
+  .kicker .dot{width:12px; height:12px; border-radius:50%; background:var(--citron);}
+  /* headline */
+  .headline{margin-top:40px; font-family:"Space Grotesk",system-ui,sans-serif;
+    font-weight:700; letter-spacing:-0.02em; line-height:1.06;
+    font-size:96px; color:var(--cloud);}
+  .headline .hl{color:var(--citron);}
+  /* body */
+  .body{margin-top:40px; font-size:38px; line-height:1.4; color:#C7CCD6; max-width:850px; font-weight:400;}
+  .body strong{color:var(--cloud); font-weight:600;}
+  .spacer{flex:1;}
+  /* footer */
+  .foot{display:flex; align-items:center; justify-content:space-between;
+    border-top:2px solid rgba(244,246,248,.12); padding-top:40px;}
+  .cta{display:inline-flex; align-items:center; gap:16px;
+    background:var(--citron); color:var(--ink);
+    font-family:"Space Grotesk",sans-serif; font-weight:700; font-size:32px;
+    padding:22px 38px; border-radius:22px;}
+  .handle{font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:28px; color:var(--cool-gray);}
+  /* ogni riga logica (\n) = una riga visiva: niente a capo automatici dentro l'unità di senso */
+  .headline .hline{display:block; white-space:nowrap;}
+  .body .bline{display:block; white-space:nowrap;}
+</style>
+</head>
+<body>
+  <div class="frame">
+    <div class="top">
+      <img class="logo" src="voler-logo-white.png" alt="Voler.ai" />
+      <div class="index">{{INDEX}}</div>
+    </div>
+    <div class="kicker"><span class="dot"></span>{{KICKER}}</div>
+    <h1 class="headline">{{HEADLINE}}</h1>
+    <p class="body">{{BODY}}</p>
+    <div class="spacer"></div>
+    <div class="foot">
+      {{CTA_BLOCK}}
+      <span class="handle">voler.ai</span>
+    </div>
+  </div>
+  <script>
+  (function(){
+    function fit(sel,start,min){
+      var el=document.querySelector(sel); if(!el) return;
+      el.style.fontSize=start+'px';
+      var max=el.clientWidth, size=start;
+      function over(){var c=el.children;for(var i=0;i<c.length;i++){if(c[i].scrollWidth>max+1)return true;}return false;}
+      while(size>min && over()){size-=1; el.style.fontSize=size+'px';}
+    }
+    function run(){ fit('.headline',96,46); fit('.body',38,22); }
+    if(document.fonts&&document.fonts.ready){document.fonts.ready.then(run);}
+    window.addEventListener('load',run);
+    run();
+  })();
+  </script>
+</body>
+</html>
