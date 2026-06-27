@@ -1,0 +1,40 @@
+name: Voler — piano editoriale settimanale
+
+on:
+  schedule:
+    # Domenica 18:00 UTC = 20:00 Europe/Rome (ora legale) / 19:00 (ora solare)
+    - cron: "0 18 * * 0"
+  workflow_dispatch: {}   # esecuzione manuale (per test dal tab Actions)
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installa Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Installa dipendenze Python
+        run: pip install --quiet anthropic
+
+      - name: Genera piano + grafiche e invia su Telegram
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+        run: python weekly-content/generate.py --posts 4
+
+      - name: Salva gli output come artifact (scaricabili dal tab Actions)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piano-editoriale
+          path: weekly-content/output
+          retention-days: 90
