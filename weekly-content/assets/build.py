@@ -51,11 +51,14 @@ def main():
         sys.exit("uso: python3 build.py spec.json")
     spec = json.load(open(sys.argv[1], encoding="utf-8"))
     variant = spec.get("variant", "dark")
-    size = spec.get("size", "1080x1350")
+    kind = spec.get("kind", "post")            # "post" (1080x1350) | "story" (1080x1920)
+    default_size = "1080x1920" if kind == "story" else "1080x1350"
+    size = spec.get("size", default_size)
     prefix = spec.get("prefix", "slide")
     outdir = os.path.expanduser(spec.get("outdir", "~/Downloads/voler-post"))
     os.makedirs(outdir, exist_ok=True)
-    tpl_path = os.path.join(HERE, f"template-{variant}.html")
+    tpl_name = f"template-story-{variant}.html" if kind == "story" else f"template-{variant}.html"
+    tpl_path = os.path.join(HERE, tpl_name)
     template = open(tpl_path, encoding="utf-8").read()
     slides = spec["slides"]; n = len(slides)
     render = os.path.join(HERE, "render.sh")

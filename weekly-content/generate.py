@@ -59,6 +59,9 @@ OUTPUT
 - Ogni post: slug (kebab-case), format ("singolo" o "carosello"), variant ("dark" default | "light"),
   caption (testo del post IG, antiretorico), slides (1 per "singolo"; 3-4 per "carosello": slide 1 hook,
   slide finale con cta). Ogni slide: kicker breve, headline (con \\n e *highlight*), body (con \\n e **bold**), cta.
+- Per OGNI post, anche una 'story' (formato verticale 1080x1920, teaser dello stesso tema): una sola slide,
+  headline molto sintetica (2-3 righe), body 2-3 righe brevi, stessa CTA. Stesse regole a-capo e *highlight*.
+  Pensala come anteprima che invoglia a vedere il post: meno testo, più diretta.
 - Varia le varianti dark/light e i formati. CTA di default "Prenota una call".
 """
 
@@ -73,7 +76,7 @@ SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["slug", "format", "variant", "caption", "slides"],
+                "required": ["slug", "format", "variant", "caption", "slides", "story"],
                 "properties": {
                     "slug": {"type": "string"},
                     "format": {"type": "string", "enum": ["singolo", "carosello"]},
@@ -91,6 +94,17 @@ SCHEMA = {
                                 "body": {"type": "string"},
                                 "cta": {"type": "string"},
                             },
+                        },
+                    },
+                    "story": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["kicker", "headline", "body", "cta"],
+                        "properties": {
+                            "kicker": {"type": "string"},
+                            "headline": {"type": "string"},
+                            "body": {"type": "string"},
+                            "cta": {"type": "string"},
                         },
                     },
                 },
@@ -156,14 +170,32 @@ def render_post(post, idx, outdir):
     return [os.path.join(outdir, f"{prefix}-{i:02d}.png") for i in range(1, n + 1)]
 
 
-def write_plan_md(data, posts_files, outdir, week):
+def render_story(post, idx, outdir):
+    prefix = f"{idx:02d}-{post['slug']}-story"
+    spec = {
+        "kind": "story",
+        "variant": post.get("variant", "dark"),
+        "outdir": outdir,
+        "prefix": prefix,
+        "slides": [post["story"]],
+    }
+    spec_path = os.path.join(outdir, f"_{prefix}.spec.json")
+    with open(spec_path, "w", encoding="utf-8") as f:
+        json.dump(spec, f, ensure_ascii=False)
+    subprocess.run([sys.executable, os.path.join(ASSETS, "build.py"), spec_path], check=True)
+    os.remove(spec_path)
+    return os.path.join(outdir, f"{prefix}-01.png")
+
+
+def write_plan_md(data, posts_files, stories_files, outdir, week):
     lines = [f"# Voler.ai — Piano editoriale settimana {week}\n", "## Radar della settimana"]
     lines += [f"- {r}" for r in data["radar"]]
     lines.append("\n## Post\n")
-    for post, files in zip(data["posts"], posts_files):
+    for post, files, story in zip(data["posts"], posts_files, stories_files):
         lines.append(f"### {post['slug']}  ·  {post['format']} ({post['variant']})")
         lines.append(f"**Caption:**\n\n{post['caption']}\n")
-        lines.append("**Grafiche:** " + ", ".join(os.path.basename(f) for f in files))
+        lines.append("**Post:** " + ", ".join(os.path.basename(f) for f in files))
+        lines.append(f"**Story:** {os.path.basename(story)}")
         lines.append("")
     path = os.path.join(outdir, "piano.md")
     with open(path, "w", encoding="utf-8") as f:
@@ -188,7 +220,7 @@ def telegram_creds():
     return None, None
 
 
-def send_telegram(data, posts_files, week):
+def send_telegram(data, posts_files, stories_files, week):
     import requests
     tok, chat = telegram_creds()
     if not tok or not chat:
@@ -207,7 +239,7 @@ def send_telegram(data, posts_files, week):
     check(requests.post(f"{api}/sendMessage",
                         data={"chat_id": chat, "text": f"🗓️ Piano editoriale Voler.ai — settimana {week}"},
                         timeout=30))
-    for post, files in zip(data["posts"], posts_files):
+    for post, files, story in zip(data["posts"], posts_files, stories_files):
         if len(files) == 1:
             with open(files[0], "rb") as fh:
                 check(requests.post(f"{api}/sendPhoto",
@@ -224,6 +256,11 @@ def send_telegram(data, posts_files, week):
             finally:
                 for fh in fhs.values():
                     fh.close()
+        # story (verticale) dello stesso post
+        with open(story, "rb") as fh:
+            check(requests.post(f"{api}/sendPhoto",
+                                data={"chat_id": chat, "caption": f"Story · {post['slug']}"},
+                                files={"photo": fh}, timeout=60))
     print("Inviato su Telegram.")
 
 
@@ -245,15 +282,16 @@ def main():
     with open(os.path.join(outdir, "plan.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    print(f"[3/4] Render grafiche ({len(data['posts'])} post)…")
+    print(f"[3/4] Render grafiche ({len(data['posts'])} post + story)…")
     posts_files = [render_post(p, i + 1, outdir) for i, p in enumerate(data["posts"])]
-    md = write_plan_md(data, posts_files, outdir, week)
+    stories_files = [render_story(p, i + 1, outdir) for i, p in enumerate(data["posts"])]
+    md = write_plan_md(data, posts_files, stories_files, outdir, week)
 
     if args.no_telegram:
         print("[4/4] --no-telegram: invio saltato.")
     else:
         print("[4/4] Invio su Telegram…")
-        send_telegram(data, posts_files, week)
+        send_telegram(data, posts_files, stories_files, week)
 
     print(f"\nFATTO. Output in {outdir}\n  piano: {md}")
 
