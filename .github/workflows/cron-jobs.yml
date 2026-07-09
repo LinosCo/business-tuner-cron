@@ -121,6 +121,8 @@ on:
           - st-interview-quality-alerts
           - st-ingest-et-visits
           - st-run-all
+          # BT jobs
+          - bt-expire-trials
           # CT jobs
           - ct-dispatch-scheduled
 
@@ -338,6 +340,24 @@ jobs:
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               -H "Content-Type: application/json" \
               "${{ secrets.ST_DEPLOY_URL }}/api/cron/reset-credits"
+
+
+  bt-expire-trials:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-expire-trials' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '0 0 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency: { group: cron-bt-expire-trials, cancel-in-progress: false }
+    steps:
+      - name: Expire Trials (BT — billing V2)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"               -H "Content-Type: application/json"               "${{ secrets.BT_DEPLOY_URL }}/api/cron/expire-trials"
 
   st-idempotency-cleanup:
     needs: st-cron-preflight
