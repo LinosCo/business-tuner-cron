@@ -46,6 +46,14 @@ TONO DI VOCE (VINCOLANTE) — antiretorico, niente hype AI:
   hook clickbait, domande retoriche a effetto, emoji a raffica, MAIUSCOLE urlate, lead-magnet "commenta PAROLA".
 - CTA sobria. Caption: poche righe, hashtag massimo 3-4 e pertinenti.
 
+FONTI E CITAZIONI (VINCOLANTE):
+- MAI citare per nome, nelle caption o nelle grafiche, creator o aziende che fanno consulenza/formazione AI
+  (potenziali competitor di Voler.ai: es. Datapizza). Il fatto resta, il brand no:
+  scrivi "un hackathon multibanca", "35 persone da 13 banche", senza nominare l'organizzatore.
+- Fonti neutrali o istituzionali invece SÌ (Microsoft, ABI Lab, ISTAT, normativa, ricerche accademiche):
+  citarle aggiunge credibilità.
+- Nel 'radar' (uso interno, non pubblicato) le fonti PUOI nominarle.
+
 GRAFICHE — regole degli A CAPO (CRITICHE, l'utente ci tiene moltissimo):
 - headline e body sono testo per una grafica. Ogni riga = un'unità di senso compiuta.
 - Inserisci a capo ESPLICITI con "\\n" (newline) in headline e body, in punti sensati:
@@ -220,7 +228,11 @@ def telegram_creds():
     return None, None
 
 
+PAUSA_INVII = 3.5  # secondi tra un invio Telegram e l'altro (evita il rate limit 429)
+
+
 def send_telegram(data, posts_files, stories_files, week):
+    import time
     import requests
     tok, chat = telegram_creds()
     if not tok or not chat:
@@ -228,39 +240,44 @@ def send_telegram(data, posts_files, stories_files, week):
         return
     api = f"https://api.telegram.org/bot{tok}"
 
-    def check(r):
+    def call(method, payload, file_paths=None, attempt=1):
+        # file_paths: dict nome->path; i file vengono riaperti a ogni tentativo
+        # (dopo un 429 l'handle è già consumato, non si può rispedire lo stesso)
+        fhs = {k: open(p, "rb") for k, p in (file_paths or {}).items()}
         try:
-            ok = r.json().get("ok")
+            r = requests.post(f"{api}/{method}", data=payload,
+                              files=fhs or None, timeout=90)
+        finally:
+            for fh in fhs.values():
+                fh.close()
+        try:
+            body = r.json()
         except Exception:
-            ok = False
-        if not r.ok or not ok:
-            raise RuntimeError(f"Telegram {r.status_code}: {r.text[:300]}")
+            body = {}
+        if body.get("ok"):
+            return
+        if r.status_code == 429 and attempt <= 3:
+            wait = body.get("parameters", {}).get("retry_after", 35) + 2
+            print(f"  Telegram 429: aspetto {wait}s e riprovo ({attempt}/3)…")
+            time.sleep(wait)
+            return call(method, payload, file_paths, attempt + 1)
+        raise RuntimeError(f"Telegram {r.status_code}: {r.text[:300]}")
 
-    check(requests.post(f"{api}/sendMessage",
-                        data={"chat_id": chat, "text": f"🗓️ Piano editoriale Voler.ai — settimana {week}"},
-                        timeout=30))
+    call("sendMessage", {"chat_id": chat, "text": f"🗓️ Piano editoriale Voler.ai — settimana {week}"})
     for post, files, story in zip(data["posts"], posts_files, stories_files):
+        time.sleep(PAUSA_INVII)
         if len(files) == 1:
-            with open(files[0], "rb") as fh:
-                check(requests.post(f"{api}/sendPhoto",
-                                    data={"chat_id": chat, "caption": post["caption"]},
-                                    files={"photo": fh}, timeout=60))
+            call("sendPhoto", {"chat_id": chat, "caption": post["caption"]},
+                 {"photo": files[0]})
         else:
             media = [{"type": "photo", "media": f"attach://f{i}", **({"caption": post["caption"]} if i == 0 else {})}
                      for i in range(len(files))]
-            fhs = {f"f{i}": open(files[i], "rb") for i in range(len(files))}
-            try:
-                check(requests.post(f"{api}/sendMediaGroup",
-                                    data={"chat_id": chat, "media": json.dumps(media, ensure_ascii=False)},
-                                    files=fhs, timeout=90))
-            finally:
-                for fh in fhs.values():
-                    fh.close()
+            call("sendMediaGroup", {"chat_id": chat, "media": json.dumps(media, ensure_ascii=False)},
+                 {f"f{i}": files[i] for i in range(len(files))})
+        time.sleep(PAUSA_INVII)
         # story (verticale) dello stesso post
-        with open(story, "rb") as fh:
-            check(requests.post(f"{api}/sendPhoto",
-                                data={"chat_id": chat, "caption": f"Story · {post['slug']}"},
-                                files={"photo": fh}, timeout=60))
+        call("sendPhoto", {"chat_id": chat, "caption": f"Story · {post['slug']}"},
+             {"photo": story})
     print("Inviato su Telegram.")
 
 
