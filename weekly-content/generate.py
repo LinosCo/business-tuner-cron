@@ -25,6 +25,7 @@ MODEL = "claude-opus-4-8"
 # --- Hub di riferimento da cui pescare i temi (pubblici, fetchabili) ---
 SOURCES = [
     "https://datapizza.tech/en/blog/",
+    "https://newsletter.h-farm.ai",
 ]
 
 SYSTEM = """\
