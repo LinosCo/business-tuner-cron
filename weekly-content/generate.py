@@ -25,6 +25,7 @@ MODEL = "claude-opus-4-8"
 # --- Hub di riferimento da cui pescare i temi (pubblici, fetchabili) ---
 SOURCES = [
     "https://datapizza.tech/en/blog/",
+    "https://newsletter.h-farm.ai",
 ]
 
 SYSTEM = """\
@@ -39,6 +40,15 @@ PROCESSO
 - Tieni ciò che un imprenditore di PMI capisce e può applicare (risparmio tempo/costi, automazione processi,
   strumenti pratici, primi passi con l'AI, incentivi/normativa, casi concreti).
 - Ri-angola ogni tema: dal "cosa è uscito" al "cosa significa per la tua azienda + come iniziare".
+
+CALIBRAZIONE PMI (VINCOLANTE, vale per QUALSIASI fonte):
+- Le fonti parlano spesso di modelli, prodotti e grandi aziende: NON riportare mai la notizia in sé.
+  Ogni post parte dalla domanda "cosa può farci concretamente una PMI da 5-50 persone?".
+- Se un tema non si traduce in un'applicazione concreta per una PMI (tempo/costi risparmiati, un processo
+  da automatizzare, una decisione da prendere, un rischio da gestire), SCARTALO — anche se è la notizia
+  della settimana.
+- Test finale su ogni post: un titolare di PMI veneta deve capirlo senza conoscere i nomi dei modelli
+  e ricavarne un'azione possibile questa settimana.
 
 TONO DI VOCE (VINCOLANTE) — antiretorico, niente hype AI:
 - Frasi piane e concrete; fatti e numeri al posto di aggettivi enfatici; onesto, mai sovravenduto.
