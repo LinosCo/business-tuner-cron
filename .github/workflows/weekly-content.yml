@@ -38,3 +38,13 @@ jobs:
           name: piano-editoriale
           path: weekly-content/output
           retention-days: 90
+
+      - name: Notifica fallimento su Telegram
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode chat_id="${TELEGRAM_CHAT_ID}" \
+            --data-urlencode text="⚠️ Piano editoriale NON generato: il workflow è fallito. Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
