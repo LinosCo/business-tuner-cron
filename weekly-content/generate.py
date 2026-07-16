@@ -4,7 +4,7 @@ Voler.ai — generatore piano editoriale settimanale (autonomo, per GitHub Actio
 
 Flusso:
   1. Scouting: scarica i temi recenti dagli hub di riferimento (blog Datapizza).
-  2. Pianifica con Claude → radar + N post (tono antiretorico, focus PMI).
+  2. Pianifica con Claude → radar + N post IG + 2-3 post LinkedIn (tono antiretorico, focus PMI).
   3. Renderizza le grafiche con assets/build.py (HTML -> PNG via Chrome headless).
   4. Scrive il piano .md e (se non --no-telegram) invia tutto su Telegram.
 
@@ -73,8 +73,19 @@ GRAFICHE — regole degli A CAPO (CRITICHE, l'utente ci tiene moltissimo):
 - headline corta e d'impatto (max ~6-7 parole per riga, 2-4 righe). Nel titolo usa *parola* per evidenziare
   in citron 1-2 parole chiave. Nel body usa **parola** per il grassetto. Una idea per slide.
 
+POST LINKEDIN (in aggiunta ai post Instagram):
+- Produci anche 2-3 post LinkedIn ('linkedin'), pubblicati dalla pagina aziendale Voler.ai.
+- NON sono la caption IG riscritta: su LinkedIn parli da consulente a titolari e responsabili di PMI,
+  con più contesto e un punto di vista esplicito. Puoi partire dagli stessi temi del radar.
+- Struttura: la PRIMA riga è il gancio (è l'unica visibile prima di "…vedi altro"): sobria, concreta,
+  niente clickbait. Poi corpo 600-1200 caratteri, paragrafi brevi (1-2 frasi) separati da riga vuota,
+  eventuale mini-lista con trattini. Chiusura con CTA sobria ("Prenota una call" o una domanda concreta).
+- Niente emoji a raffica (max 1-2, meglio zero), hashtag max 3 in fondo, mai tag a persone.
+- Il campo 'testo' deve essere il post COMPLETO pronto da incollare su LinkedIn (gancio, corpo, CTA,
+  hashtag inclusi). Stesso tono antiretorico e stessa calibrazione PMI dei post Instagram.
+
 OUTPUT
-- Produci 'radar' (3-6 bullet: i temi caldi della settimana, una riga ciascuno) e 'posts'.
+- Produci 'radar' (3-6 bullet: i temi caldi della settimana, una riga ciascuno), 'posts' e 'linkedin'.
 - Ogni post: slug (kebab-case), format ("singolo" o "carosello"), variant ("dark" default | "light"),
   caption (testo del post IG, antiretorico), slides (1 per "singolo"; 3-4 per "carosello": slide 1 hook,
   slide finale con cta). Ogni slide: kicker breve, headline (con \\n e *highlight*), body (con \\n e **bold**), cta.
@@ -87,9 +98,21 @@ OUTPUT
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["radar", "posts"],
+    "required": ["radar", "posts", "linkedin"],
     "properties": {
         "radar": {"type": "array", "items": {"type": "string"}},
+        "linkedin": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["slug", "testo"],
+                "properties": {
+                    "slug": {"type": "string"},
+                    "testo": {"type": "string"},
+                },
+            },
+        },
         "posts": {
             "type": "array",
             "items": {
@@ -152,8 +175,9 @@ def fetch_sources():
 def _user_prompt(material, n_posts):
     return (
         f"Materiale di scouting dagli hub di riferimento (temi AI recenti):\n\n{material}\n\n"
-        f"Genera il piano editoriale Instagram di Voler.ai per questa settimana: {n_posts} post, "
-        f"con focus PMI e tono antiretorico. Rispetta le regole degli a capo nelle grafiche."
+        f"Genera il piano editoriale di Voler.ai per questa settimana: {n_posts} post Instagram "
+        f"più 2-3 post LinkedIn, con focus PMI e tono antiretorico. "
+        f"Rispetta le regole degli a capo nelle grafiche."
     )
 
 
@@ -199,7 +223,7 @@ def plan_via_api(material, n_posts):
     user = _user_prompt(material, n_posts)
     resp = client.messages.create(
         model=MODEL,
-        max_tokens=8000,
+        max_tokens=12000,
         thinking={"type": "adaptive"},
         output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
         system=SYSTEM,
@@ -265,6 +289,11 @@ def write_plan_md(data, posts_files, stories_files, outdir, week):
         lines.append("**Post:** " + ", ".join(os.path.basename(f) for f in files))
         lines.append(f"**Story:** {os.path.basename(story)}")
         lines.append("")
+    if data.get("linkedin"):
+        lines.append("\n## Post LinkedIn\n")
+        for li in data["linkedin"]:
+            lines.append(f"### {li['slug']}")
+            lines.append(f"{li['testo']}\n")
     path = os.path.join(outdir, "piano.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -338,6 +367,10 @@ def send_telegram(data, posts_files, stories_files, week):
         # story (verticale) dello stesso post
         call("sendPhoto", {"chat_id": chat, "caption": f"Story · {post['slug']}"},
              {"photo": story})
+    for li in data.get("linkedin", []):
+        time.sleep(PAUSA_INVII)
+        call("sendMessage", {"chat_id": chat,
+                             "text": f"💼 LinkedIn · {li['slug']}\n\n{li['testo']}"[:4096]})
     print("Inviato su Telegram.")
 
 
