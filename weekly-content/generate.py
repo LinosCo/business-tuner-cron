@@ -4,19 +4,20 @@ Voler.ai — generatore piano editoriale settimanale (autonomo, per GitHub Actio
 
 Flusso:
   1. Scouting: scarica i temi recenti dagli hub di riferimento (blog Datapizza).
-  2. Pianifica con l'API di Claude (structured output) → radar + N post (tono antiretorico, focus PMI).
+  2. Pianifica con Claude → radar + N post (tono antiretorico, focus PMI).
   3. Renderizza le grafiche con assets/build.py (HTML -> PNG via Chrome headless).
   4. Scrive il piano .md e (se non --no-telegram) invia tutto su Telegram.
 
-Env richieste:
-  ANTHROPIC_API_KEY                      (obbligatoria)
+Env richieste (una delle due):
+  CLAUDE_CODE_OAUTH_TOKEN                token da `claude setup-token` — usa la licenza
+                                         Claude (abbonamento) via CLI headless; richiede
+                                         il binario `claude` nel PATH
+  ANTHROPIC_API_KEY                      fallback: API a consumo via SDK Python
   TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID  (opzionali; fallback: scripts/send-telegram.py nel repo)
 
 Uso:  python generate.py [--no-telegram] [--posts N] [--outdir DIR]
 """
 import argparse, datetime, json, os, re, subprocess, sys, urllib.request
-
-import anthropic
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
@@ -148,13 +149,54 @@ def fetch_sources():
     return "\n\n".join(chunks)
 
 
-def plan(material, n_posts):
-    client = anthropic.Anthropic()  # legge ANTHROPIC_API_KEY dall'ambiente
-    user = (
+def _user_prompt(material, n_posts):
+    return (
         f"Materiale di scouting dagli hub di riferimento (temi AI recenti):\n\n{material}\n\n"
         f"Genera il piano editoriale Instagram di Voler.ai per questa settimana: {n_posts} post, "
         f"con focus PMI e tono antiretorico. Rispetta le regole degli a capo nelle grafiche."
     )
+
+
+def _extract_json(text):
+    """Estrae l'oggetto JSON dalla risposta (tollera recinzioni markdown o testo attorno)."""
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.M)
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        sys.exit(f"Nessun JSON nella risposta del modello:\n{text[:500]}")
+    return json.loads(text[start : end + 1])
+
+
+def plan_via_claude_code(material, n_posts):
+    """Genera il piano con la licenza Claude (abbonamento) via Claude Code CLI headless."""
+    prompt = (
+        SYSTEM
+        + "\n\n---\n\n"
+        + _user_prompt(material, n_posts)
+        + "\n\nNon usare alcuno strumento. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido "
+        "conforme a questo JSON Schema, senza testo prima o dopo e senza recinzioni markdown:\n"
+        + json.dumps(SCHEMA, ensure_ascii=False)
+    )
+    r = subprocess.run(
+        ["claude", "-p", "--model", MODEL, "--output-format", "json"],
+        input=prompt, capture_output=True, text=True, timeout=1800,
+    )
+    if r.returncode != 0:
+        sys.exit(f"claude CLI fallita (exit {r.returncode}):\n{r.stderr[:800] or r.stdout[:800]}")
+    wrapper = json.loads(r.stdout)
+    if wrapper.get("is_error"):
+        sys.exit(f"claude CLI: risposta di errore:\n{str(wrapper)[:800]}")
+    data = _extract_json(wrapper.get("result", ""))
+    if not data.get("posts"):
+        sys.exit("Piano vuoto: nessun post nella risposta del modello.")
+    return data
+
+
+def plan_via_api(material, n_posts):
+    """Fallback: API Anthropic a consumo (structured output nativo)."""
+    import anthropic
+
+    client = anthropic.Anthropic()  # legge ANTHROPIC_API_KEY dall'ambiente
+    user = _user_prompt(material, n_posts)
     resp = client.messages.create(
         model=MODEL,
         max_tokens=8000,
@@ -169,6 +211,14 @@ def plan(material, n_posts):
     if not text:
         sys.exit("Nessun output testuale dal modello.")
     return json.loads(text)
+
+
+def plan(material, n_posts):
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return plan_via_claude_code(material, n_posts)
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return plan_via_api(material, n_posts)
+    sys.exit("Serve CLAUDE_CODE_OAUTH_TOKEN (licenza) o ANTHROPIC_API_KEY (API a consumo).")
 
 
 def render_post(post, idx, outdir):

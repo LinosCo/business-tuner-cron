@@ -21,11 +21,15 @@ jobs:
         uses: browser-actions/setup-chrome@v1
 
       - name: Installa dipendenze Python
-        run: pip install --quiet anthropic requests
+        run: pip install --quiet requests
+
+      - name: Installa Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
 
       - name: Genera piano + grafiche e invia su Telegram
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Licenza Claude (abbonamento) via `claude setup-token` — niente API a consumo
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
