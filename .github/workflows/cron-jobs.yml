@@ -41,7 +41,7 @@ on:
     # ── Daily Jobs ────────────────────────────────────────────────────────
     - cron: '0 0 * * *'    # 00:00 UTC — reset credits
     - cron: '30 0 * * *'   # 00:30 UTC — idempotency cleanup
-    - cron: '0 1 * * *'    # 01:00 UTC — audit log cleanup
+    - cron: '0 1 * * *'    # 01:00 UTC — audit retention cleanup (BT)
     - cron: '0 2 * * *'    # 02:00 UTC — aggregate chatbot analytics
     - cron: '30 2 * * *'   # 02:30 UTC — backup DB
     - cron: '0 3 * * *'    # 03:00 UTC — CMS sync analytics
@@ -98,7 +98,6 @@ on:
           - st-reset-monthly-counters
           - st-aggregate-chatbot-analytics
           - st-backup-db
-          - st-audit-log-cleanup
           - st-idempotency-cleanup
           - st-cms-sync-analytics
           - st-cms-generate-suggestions
@@ -123,6 +122,7 @@ on:
           - st-run-all
           # BT jobs
           - bt-expire-trials
+          - bt-audit-retention-cleanup
           # CT jobs
           - ct-dispatch-scheduled
 
@@ -382,18 +382,18 @@ jobs:
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.ST_DEPLOY_URL }}/api/cron/idempotency-cleanup"
 
-  st-audit-log-cleanup:
-    needs: st-cron-preflight
+  bt-audit-retention-cleanup:
+    # Supersedes st-audit-log-cleanup (retired): BT's route covers the full
+    # AdminAuditEvent table (admin + legacy + system + security events), not
+    # just legacy.* rows. Both routes documented this migration explicitly.
     if: >-
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-audit-log-cleanup' || github.event.inputs.job == 'all'))
-      || (github.event.schedule == '0 1 * * *'
-          && needs.st-cron-preflight.outputs.all != 'true'
-          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-audit-retention-cleanup' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '0 1 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    concurrency: { group: cron-st-audit-log-cleanup, cancel-in-progress: false }
+    concurrency: { group: cron-bt-audit-retention-cleanup, cancel-in-progress: false }
     steps:
-      - name: Audit Log Cleanup
+      - name: Audit Retention Cleanup (BT)
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 4
@@ -402,7 +402,7 @@ jobs:
           command: |
             curl ${CURL_OPTS} -X POST \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-              "${{ secrets.ST_DEPLOY_URL }}/api/cron/audit-log-cleanup"
+              "${{ secrets.BT_DEPLOY_URL }}/api/cron/audit-retention-cleanup"
 
   st-aggregate-chatbot-analytics:
     needs: st-cron-preflight
@@ -1015,7 +1015,6 @@ jobs:
       - st-ingest-et-visits
       - st-reset-credits
       - st-idempotency-cleanup
-      - st-audit-log-cleanup
       - st-aggregate-chatbot-analytics
       - st-backup-db
       - st-cms-sync-analytics
