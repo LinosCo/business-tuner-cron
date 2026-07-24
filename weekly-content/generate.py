@@ -27,6 +27,7 @@ MODEL = "claude-opus-4-8"
 SOURCES = [
     "https://datapizza.tech/en/blog/",
     "https://newsletter.h-farm.ai",
+    "https://www.maxturazzini.com/blog",
 ]
 
 SYSTEM = """\

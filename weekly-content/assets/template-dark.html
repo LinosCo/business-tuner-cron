@@ -8,7 +8,7 @@
 <style>
   /* === Voler.ai brand (estratto da volerai-next) === */
   :root{
-    --ink:#10121B; --cloud:#F4F6F8; --citron:#D7FF3B; --cool-gray:#6B7280;
+    --ink:#10121B; --cloud:#F4F6F8; --rotta:#FF6BB1; --cool-gray:#9BA1AD;
   }
   *{margin:0;padding:0;box-sizing:border-box;}
   html,body{width:1080px;height:1350px;}
@@ -18,11 +18,11 @@
     -webkit-font-smoothing:antialiased;
     position:relative; overflow:hidden;
   }
-  /* glow citron in alto a destra, discreto */
+  /* glow rotta (linea magenta) in alto a destra, discreto */
   body::before{
     content:""; position:absolute; top:-280px; right:-260px;
     width:680px; height:680px; border-radius:50%;
-    background:radial-gradient(circle, rgba(215,255,59,.16) 0%, rgba(215,255,59,0) 70%);
+    background:radial-gradient(circle, rgba(255,107,177,.14) 0%, rgba(255,107,177,0) 70%);
   }
   .frame{position:absolute; inset:0; padding:96px 92px; display:flex; flex-direction:column;}
   /* header */
@@ -33,13 +33,13 @@
   /* kicker */
   .kicker{margin-top:84px; display:inline-flex; align-self:flex-start; align-items:center; gap:14px;
     font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:24px;
-    text-transform:uppercase; letter-spacing:.16em; color:var(--citron);}
-  .kicker .dot{width:12px; height:12px; border-radius:50%; background:var(--citron);}
+    text-transform:uppercase; letter-spacing:.16em; color:var(--rotta);}
+  .kicker .dot{width:12px; height:12px; border-radius:50%; background:var(--rotta);}
   /* headline */
   .headline{margin-top:40px; font-family:"Space Grotesk",system-ui,sans-serif;
     font-weight:700; letter-spacing:-0.02em; line-height:1.06;
     font-size:96px; color:var(--cloud);}
-  .headline .hl{color:var(--citron);}
+  .headline .hl{color:var(--rotta);}
   /* body */
   .body{margin-top:40px; font-size:38px; line-height:1.4; color:#C7CCD6; max-width:850px; font-weight:400;}
   .body strong{color:var(--cloud); font-weight:600;}
@@ -48,7 +48,7 @@
   .foot{display:flex; align-items:center; justify-content:space-between;
     border-top:2px solid rgba(244,246,248,.12); padding-top:40px;}
   .cta{display:inline-flex; align-items:center; gap:16px;
-    background:var(--citron); color:var(--ink);
+    background:var(--rotta); color:var(--ink);
     font-family:"Space Grotesk",sans-serif; font-weight:700; font-size:32px;
     padding:22px 38px; border-radius:22px;}
   .handle{font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:28px; color:var(--cool-gray);}
