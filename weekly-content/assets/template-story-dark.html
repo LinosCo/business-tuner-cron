@@ -7,30 +7,30 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <style>
   /* === Voler.ai — STORY 1080x1920 (variante dark) === */
-  :root{ --ink:#10121B; --cloud:#F4F6F8; --citron:#D7FF3B; --cool-gray:#6B7280; }
+  :root{ --ink:#10121B; --cloud:#F4F6F8; --rotta:#FF6BB1; --cool-gray:#9BA1AD; }
   *{margin:0;padding:0;box-sizing:border-box;}
   html,body{width:1080px;height:1920px;}
   body{background:var(--ink); color:var(--cloud); font-family:"Inter",system-ui,sans-serif;
     -webkit-font-smoothing:antialiased; position:relative; overflow:hidden;}
   body::before{content:""; position:absolute; top:-220px; right:-220px; width:680px; height:680px; border-radius:50%;
-    background:radial-gradient(circle, rgba(215,255,59,.16) 0%, rgba(215,255,59,0) 70%);}
+    background:radial-gradient(circle, rgba(255,107,177,.14) 0%, rgba(255,107,177,0) 70%);}
   /* SAFE ZONE: ~270px in alto e ~300px in basso restano liberi dalla UI di IG */
   .frame{position:absolute; inset:0; padding:270px 96px 300px; display:flex; flex-direction:column;}
   .logo{height:50px; align-self:flex-start;}
   .grow{flex:1;}
   .kicker{display:inline-flex; align-self:flex-start; align-items:center; gap:14px;
     font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:26px;
-    text-transform:uppercase; letter-spacing:.16em; color:var(--citron);}
-  .kicker .dot{width:13px; height:13px; border-radius:50%; background:var(--citron);}
+    text-transform:uppercase; letter-spacing:.16em; color:var(--rotta);}
+  .kicker .dot{width:13px; height:13px; border-radius:50%; background:var(--rotta);}
   .headline{margin-top:36px; font-family:"Space Grotesk",system-ui,sans-serif;
     font-weight:700; letter-spacing:-0.02em; line-height:1.06; font-size:104px; color:var(--cloud);}
-  .headline .hl{color:var(--citron);}
+  .headline .hl{color:var(--rotta);}
   .headline .hline{display:block; white-space:nowrap;}
   .body{margin-top:40px; font-size:42px; line-height:1.4; color:#C7CCD6; font-weight:400;}
   .body strong{color:var(--cloud); font-weight:600;}
   .body .bline{display:block; white-space:nowrap;}
   .foot{display:flex; align-items:center; gap:24px;}
-  .cta{display:inline-flex; align-items:center; background:var(--citron); color:var(--ink);
+  .cta{display:inline-flex; align-items:center; background:var(--rotta); color:var(--ink);
     font-family:"Space Grotesk",sans-serif; font-weight:700; font-size:34px; padding:24px 40px; border-radius:24px;}
   .handle{font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:30px; color:var(--cool-gray);}
 </style>

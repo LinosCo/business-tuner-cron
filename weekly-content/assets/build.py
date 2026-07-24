@@ -20,7 +20,7 @@ Formato spec.json:
     }
   ]
 }
-Markup nei testi:  *parola* -> evidenziata (citron) nel titolo ;  **parola** -> grassetto nel body.
+Markup nei testi:  *parola* -> evidenziata (rotta, magenta) nel titolo ;  **parola** -> grassetto nel body.
 Per niente CTA/kicker/index, metti stringa vuota "".
 """
 import json, os, re, sys, subprocess
@@ -31,7 +31,7 @@ def _lines(s):
     return (s or "").replace("\\n", "\n").split("\n")
 
 def fmt_headline(s):
-    # ogni riga (\n) = un blocco che NON va a capo da solo; *parola* = citron
+    # ogni riga (\n) = un blocco che NON va a capo da solo; *parola* = rotta (magenta)
     out = []
     for ln in _lines(s):
         ln = re.sub(r"\*(.+?)\*", r'<span class="hl">\1</span>', ln)
