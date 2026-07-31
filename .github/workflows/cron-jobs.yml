@@ -49,6 +49,7 @@ on:
     - cron: '0 4 * * *'    # 04:00 UTC — performance snapshot + check alerts
     - cron: '30 4 * * *'   # 04:30 UTC — interview quality alerts
     - cron: '0 5 * * *'    # 05:00 UTC — signal ingestion trends
+    - cron: '30 5 * * *'   # 05:30 UTC — richiami attivita scadute (BT)
     - cron: '0 6 * * *'    # 06:00 UTC — tip verify
     - cron: '30 6 * * *'   # 06:30 UTC — gap-to-content
     - cron: '0 7 * * *'    # 07:00 UTC — signal cleanup
@@ -123,6 +124,7 @@ on:
           # BT jobs
           - bt-expire-trials
           - bt-audit-retention-cleanup
+          - bt-activity-overdue
           # CT jobs
           - ct-dispatch-scheduled
 
@@ -403,6 +405,36 @@ jobs:
             curl ${CURL_OPTS} -X POST \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.BT_DEPLOY_URL }}/api/cron/audit-retention-cleanup"
+
+  bt-activity-overdue:
+    # Richiami giornalieri per le attivita scadute. Il producer e idempotente
+    # per giorno UTC: la sua eventKey incorpora <task>:overdue:<YYYY-MM-DD>, quindi
+    # un retry — o una seconda esecuzione manuale nello stesso giorno — non
+    # genera un secondo richiamo, mentre un task ancora scaduto il giorno dopo
+    # ne produce uno nuovo. Per questo il retry qui e sicuro.
+    #
+    # 05:30 UTC = 07:30 in Italia d'estate: i richiami sono in inbox prima
+    # dell'inizio della giornata lavorativa. Nessuna email: TASK_OVERDUE non e
+    # nella allowlist dell'outbox.
+    #
+    # Nessun gate sul preflight di pausa: quello e specifico di Strategy Tuner.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-activity-overdue' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '30 5 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-bt-activity-overdue, cancel-in-progress: false }
+    steps:
+      - name: Activity Overdue Reminders (BT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.BT_DEPLOY_URL }}/api/cron/activity-overdue"
 
   st-aggregate-chatbot-analytics:
     needs: st-cron-preflight
