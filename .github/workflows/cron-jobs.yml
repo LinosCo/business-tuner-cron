@@ -174,6 +174,13 @@ jobs:
     timeout-minutes: 5
     concurrency:
       group: cron-st-dispatch-scheduled
+      # DELIBERATAMENTE lasciato a `false`, a differenza degli altri due job
+      # `*/15`. Qui una cancellazione a meta' corsa potrebbe interrompere una
+      # pubblicazione mentre la chiamata al connettore e' in volo: il remoto
+      # potrebbe averla accettata senza che noi l'abbiamo registrata, e la corsa
+      # successiva ripubblicherebbe. Le semantiche di ripresa di questo percorso
+      # vanno verificate da chi possiede ST prima di cambiarlo — il rumore in
+      # meno non vale una pubblicazione doppia.
       cancel-in-progress: false
     steps:
       - name: Dispatch Scheduled (ST)
@@ -198,7 +205,13 @@ jobs:
     timeout-minutes: 5
     concurrency:
       group: cron-ct-dispatch-scheduled
-      cancel-in-progress: false
+      # Vedi la nota su bt-governance-emails: con `false` una corsa in coda per
+      # mancanza di runner viene cancellata all'arrivo della terza e la corsa
+      # risulta fallita a vuoto. Qui superare la vecchia e' sicuro perche' il
+      # dispatch e' auto-riparante per costruzione — lo dice il commento su
+      # DISPATCH_BATCH_LIMIT: "whatever doesn't fit stays dispatchStatus:
+      # null | scheduled and is picked up on the next tick, oldest-due first".
+      cancel-in-progress: true
     steps:
       - name: Dispatch Scheduled (CT)
         uses: nick-fields/retry@v3
@@ -467,7 +480,15 @@ jobs:
       || github.event.schedule == '*/15 * * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    concurrency: { group: cron-bt-governance-emails, cancel-in-progress: false }
+    # `cancel-in-progress: true` e non `false` come gli altri job BT. Con `false`
+    # una corsa che resta in coda per mancanza di runner diventa "pending", e
+    # all'arrivo della terza GitHub la cancella — la corsa risulta fallita senza
+    # che nulla sia rotto (e' successo alle 16:26 e 16:43 UTC del 6 ago: job
+    # cancellati dopo 15 minuti, senza log, perche' non erano mai partiti).
+    # Superare una corsa vecchia e' qui la semantica GIUSTA, non un compromesso:
+    # la consegna e' claim-based e i receipt non consegnati restano dovuti, quindi
+    # la corsa successiva riprende esattamente da dove si era fermata.
+    concurrency: { group: cron-bt-governance-emails, cancel-in-progress: true }
     steps:
       - name: Governance Emails (BT)
         uses: nick-fields/retry@v3
@@ -1085,11 +1106,16 @@ jobs:
       - st-cron-preflight
       - st-dispatch-scheduled
       - ct-dispatch-scheduled
-      # D-03: questo job esiste PERCHE' un fallimento silenzioso di consegna
-      # non venga perso — lasciarlo fuori dall'allerta sarebbe contraddittorio.
-      # NB: gli altri job BT non sono in questa lista, quindi i loro
-      # fallimenti oggi non allertano nessuno: vale la pena guardarci.
+      # Job BT. Erano tutti fuori da questa lista — nessun commento spiegava
+      # perche', e il risultato era che un fallimento di scadenza trial, di
+      # pulizia audit o di richiamo attivita' non arrivava a nessuno. Ora ci
+      # sono: `if: always() && contains(needs.*.result, 'failure')` ignora i
+      # risultati `skipped` e `cancelled`, quindi aggiungerli non produce
+      # allerte quando semplicemente non tocca a loro girare.
       - bt-governance-emails
+      - bt-expire-trials
+      - bt-audit-retention-cleanup
+      - bt-activity-overdue
       - st-signal-classify-retry
       - st-signal-ingestion-proactive
       - st-signal-ingestion-full
