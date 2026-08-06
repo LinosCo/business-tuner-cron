@@ -125,6 +125,7 @@ on:
           - bt-expire-trials
           - bt-audit-retention-cleanup
           - bt-activity-overdue
+          - bt-governance-emails
           # CT jobs
           - ct-dispatch-scheduled
 
@@ -435,6 +436,49 @@ jobs:
             curl ${CURL_OPTS} -X POST \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.BT_DEPLOY_URL }}/api/cron/activity-overdue"
+
+  bt-governance-emails:
+    # D-03 — motore di RITENTATIVO per le email di governance (decisione d'area
+    # richiesta). Prima di questo job il worker esisteva e non lo invocava
+    # nessuno.
+    #
+    # Cosa attiva, e cosa NON attiva. `AREA_PROPOSAL_EMAIL_TRANSPORT` non
+    # impostata vale `legacy`, e in `legacy` l'email parte GIA' in linea alla
+    # creazione della proposta: questo job non cambia nulla per gli invii che
+    # riescono. Cambia tutto per quelli che falliscono — `completeInboxEmailDelivery`
+    # programma il ritentativo (3 tentativi, 60s di distanza) e finora non lo
+    # eseguiva nessuno, quindi un'email di governance critica fallita era persa
+    # per sempre, in silenzio.
+    #
+    # Perche' ogni 15 minuti e non giornaliero: la distanza fra i tentativi e'
+    # di 60 secondi e un claim diventa stale dopo 15 minuti — con una cadenza
+    # giornaliera quei numeri non vorrebbero dire niente. 15 minuti allinea il
+    # job alla finestra di staleness: un claim abbandonato viene ripreso alla
+    # corsa successiva. A vuoto costa una sola query indicizzata che torna zero
+    # righe, ed e' bounded (20 receipt per invocazione, tetto duro a 100).
+    #
+    # Il retry HTTP qui e' sicuro: la consegna e' claim-based
+    # (`updateMany` condizionale sullo stato), quindi due esecuzioni
+    # sovrapposte non possono inviare due volte lo stesso receipt.
+    #
+    # Nessun gate sul preflight di pausa: quello e' specifico di Strategy Tuner.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-governance-emails' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '*/15 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency: { group: cron-bt-governance-emails, cancel-in-progress: false }
+    steps:
+      - name: Governance Emails (BT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.BT_DEPLOY_URL }}/api/cron/governance-emails"
 
   st-aggregate-chatbot-analytics:
     needs: st-cron-preflight
@@ -1041,6 +1085,11 @@ jobs:
       - st-cron-preflight
       - st-dispatch-scheduled
       - ct-dispatch-scheduled
+      # D-03: questo job esiste PERCHE' un fallimento silenzioso di consegna
+      # non venga perso — lasciarlo fuori dall'allerta sarebbe contraddittorio.
+      # NB: gli altri job BT non sono in questa lista, quindi i loro
+      # fallimenti oggi non allertano nessuno: vale la pena guardarci.
+      - bt-governance-emails
       - st-signal-classify-retry
       - st-signal-ingestion-proactive
       - st-signal-ingestion-full
