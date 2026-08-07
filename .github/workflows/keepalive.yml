@@ -1,0 +1,46 @@
+# Presidio contro lo spegnimento silenzioso di TUTTI i cron di questo repo.
+#
+# GitHub Actions disabilita automaticamente gli `schedule:` di un repository
+# in cui non avviene alcuna attivita (commit/push) per 60 giorni consecutivi.
+# Questo repo e di sola infrastruttura: contiene un workflow che gira da solo
+# e nessuno ha motivo di committarci per mesi. Il risultato e un guasto senza
+# sintomi — i cron smettono di partire, `notify-on-failure` non scatta (non
+# c'e nessun job FALLITO, semplicemente non ne parte piu nessuno), e la
+# piattaforma perde dispatch, refresh dei token OAuth, promemoria e pulizie
+# senza che nulla lo segnali.
+#
+# Questo job fa un commit vuoto ogni tre settimane, azzerando il contatore dei
+# 60 giorni. Usa il GITHUB_TOKEN di default proprio perche' i push fatti con
+# quel token NON innescano altri workflow: il commit conta come attivita del
+# repository ma non provoca corse a catena.
+#
+# Nota su cosa questo presidio NON copre: un cron che parte e fallisce e gia
+# coperto da `notify-on-failure` (Slack); un cron che parte, risponde 200 e
+# non fa nulla di utile non e visibile da qui — servirebbe un dead-man's
+# switch lato applicazione (l'app allarma se non riceve il ping atteso entro
+# una finestra). Quello richiede un endpoint applicativo e resta un
+# follow-up dichiarato, non implementabile in questo repository.
+
+name: Keepalive
+
+on:
+  schedule:
+    - cron: '0 3 */21 * *' # ogni 21 giorni, 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Empty commit to reset the 60-day inactivity timer
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive — mantiene attivi gli scheduled workflow [skip ci]"
+          git push

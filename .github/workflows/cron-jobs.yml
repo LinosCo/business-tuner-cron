@@ -42,6 +42,7 @@ on:
     - cron: '0 0 * * *'    # 00:00 UTC — reset credits
     - cron: '30 0 * * *'   # 00:30 UTC — idempotency cleanup
     - cron: '0 1 * * *'    # 01:00 UTC — audit retention cleanup (BT)
+    - cron: '30 1 * * *'   # 01:30 UTC — cleanup upload media orfani (CT)
     - cron: '0 2 * * *'    # 02:00 UTC — aggregate chatbot analytics
     - cron: '30 2 * * *'   # 02:30 UTC — backup DB
     - cron: '0 3 * * *'    # 03:00 UTC — CMS sync analytics
@@ -53,6 +54,7 @@ on:
     - cron: '0 6 * * *'    # 06:00 UTC — tip verify
     - cron: '30 6 * * *'   # 06:30 UTC — gap-to-content
     - cron: '0 7 * * *'    # 07:00 UTC — signal cleanup
+    - cron: '30 7 * * *'   # 07:30 UTC — promemoria cadenza fonti (BT)
     - cron: '0 8 * * *'    # 08:00 UTC — tip retry failed
     - cron: '30 8 * * *'   # 08:30 UTC — oauth token refresh
     - cron: '0 9 * * *'    # 09:00 UTC — breach deadline alerts (separate from run-all)
@@ -225,6 +227,40 @@ jobs:
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               -H "Content-Type: application/json" \
               "${{ secrets.CT_DEPLOY_URL }}/api/cron/dispatch-scheduled"
+
+  ct-cleanup-media-uploads:
+    # F0-7 — reaper degli upload di riferimento rimasti orfani: CtMediaAsset
+    # con mode "UPLOAD", piu vecchi di 24h e senza contentDraftId (un upload
+    # legato a una bozza non viene mai toccato, e nessun asset GENERATO viene
+    # mai toccato). La route dichiara nel proprio commento di aspettare uno
+    # scheduler esterno — e non ne aveva mai avuto uno: senza questo job i
+    # blob orfani si accumulavano indefinitamente sullo store.
+    #
+    # 01:30 UTC = 03:30 in Italia d'estate, di notte: cancella blob, meglio
+    # fuori dall'orario in cui qualcuno sta lavorando a una bozza.
+    #
+    # Retry sicuro: il criterio di selezione e assoluto (createdAt < now-24h,
+    # contentDraftId null), quindi una seconda corsa trova semplicemente meno
+    # righe da cancellare, mai righe diverse.
+    #
+    # Nessun gate sul preflight di pausa: quello e specifico di Strategy Tuner.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'ct-cleanup-media-uploads' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '30 1 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-ct-cleanup-media-uploads, cancel-in-progress: false }
+    steps:
+      - name: Cleanup Orphan Media Uploads (CT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.CT_DEPLOY_URL }}/api/cron/cleanup-media-uploads"
 
   # ═══════════════════════════════════════════════════════════════════════
   # Every 10 min — signal classification retry
@@ -449,6 +485,43 @@ jobs:
             curl ${CURL_OPTS} -X POST \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.BT_DEPLOY_URL }}/api/cron/activity-overdue"
+
+  bt-source-cadence-reminder:
+    # S1.4 — promemoria al maintainer di una fonte la cui cadenza dichiarata e
+    # scaduta (settimanale/mensile/trimestrale su CtSource.cadenceDays). Il
+    # campo e la UI esistono dal 6 agosto; il producer e la route cron pure.
+    # Mancava solo chi lo invocasse: la riga di registro S1.4 dichiara
+    # esplicitamente "la schedulazione esterna resta fuori da questo
+    # repository", ed e questo il job che chiude il gap (F0-7).
+    #
+    # Il retry e sicuro per la stessa ragione di bt-activity-overdue:
+    # `emitSourceCadenceReminders` incorpora la data UTC nella propria
+    # eventKey, quindi un secondo giro nello stesso giorno non produce un
+    # secondo richiamo, mentre una fonte ancora in ritardo il giorno dopo ne
+    # produce uno nuovo.
+    #
+    # 07:30 UTC = 09:30 in Italia d'estate. Piu tardi dei richiami attivita
+    # (05:30) di proposito: una cadenza scaduta non e urgente come un task
+    # scaduto, e cosi le due notifiche non arrivano insieme.
+    #
+    # Nessun gate sul preflight di pausa: quello e specifico di Strategy Tuner.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-source-cadence-reminder' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '30 7 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-bt-source-cadence-reminder, cancel-in-progress: false }
+    steps:
+      - name: Source Cadence Reminders (BT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.BT_DEPLOY_URL }}/api/cron/source-cadence-reminder"
 
   bt-governance-emails:
     # D-03 — motore di RITENTATIVO per le email di governance (decisione d'area
@@ -1116,6 +1189,8 @@ jobs:
       - bt-expire-trials
       - bt-audit-retention-cleanup
       - bt-activity-overdue
+      - bt-source-cadence-reminder
+      - ct-cleanup-media-uploads
       - st-signal-classify-retry
       - st-signal-ingestion-proactive
       - st-signal-ingestion-full
