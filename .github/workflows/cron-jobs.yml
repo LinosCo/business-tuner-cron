@@ -127,9 +127,11 @@ on:
           - bt-expire-trials
           - bt-audit-retention-cleanup
           - bt-activity-overdue
+          - bt-source-cadence-reminder
           - bt-governance-emails
           # CT jobs
           - ct-dispatch-scheduled
+          - ct-cleanup-media-uploads
 
 env:
   CURL_OPTS: '--fail --silent --show-error --max-time 300'
