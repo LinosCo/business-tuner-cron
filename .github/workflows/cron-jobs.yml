@@ -58,6 +58,7 @@ on:
     - cron: '0 8 * * *'    # 08:00 UTC — tip retry failed
     - cron: '30 8 * * *'   # 08:30 UTC — oauth token refresh
     - cron: '0 9 * * *'    # 09:00 UTC — breach deadline alerts (separate from run-all)
+    - cron: '30 9 * * *'   # 09:30 UTC — potatura assemblaggi di contesto orfani (BT)
     - cron: '0 10 * * *'   # 10:00 UTC — performance backfill
     - cron: '0 11 * * *'   # 11:00 UTC — signals/reclassify-pending
 
@@ -129,6 +130,7 @@ on:
           - bt-activity-overdue
           - bt-source-cadence-reminder
           - bt-governance-emails
+          - bt-context-assembly-prune
           # CT jobs
           - ct-dispatch-scheduled
           - ct-cleanup-media-uploads
@@ -524,6 +526,42 @@ jobs:
             curl ${CURL_OPTS} -X POST \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.BT_DEPLOY_URL }}/api/cron/source-cadence-reminder"
+
+  bt-context-assembly-prune:
+    # L5-F — pota le righe di ProjectContextAssembly che non hanno prodotto
+    # nulla di persistito e hanno passato i 30 giorni di ritenzione. Le righe
+    # COLLEGATE a un suggerimento non vengono mai toccate: sono la memoria di
+    # come quel suggerimento e nato, ed e il motivo per cui la tabella esiste.
+    #
+    # Senza questo job la tabella crescerebbe quanto il numero totale di
+    # chiamate AI mai effettuate: e il costo che la spec del motore visibile
+    # segnalava come principale per la strada del registro.
+    #
+    # Il retry e sicuro perche la cancellazione e idempotente: una deleteMany
+    # con la stessa clausola, ripetuta, non ha altro da cancellare.
+    #
+    # 09:30 UTC e non 02:00 come previsto in origine: tutti gli slot fra
+    # 00:00 e 09:00 sono gia occupati, e la potatura non ha nessun vincolo di
+    # orario — nessuno la aspetta e non manda notifiche.
+    #
+    # Nessun gate sul preflight di pausa: quello e specifico di Strategy Tuner.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-context-assembly-prune' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '30 9 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-bt-context-assembly-prune, cancel-in-progress: false }
+    steps:
+      - name: Context Assembly Prune (BT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.BT_DEPLOY_URL }}/api/cron/context-assembly-prune"
 
   bt-governance-emails:
     # D-03 — motore di RITENTATIVO per le email di governance (decisione d'area
