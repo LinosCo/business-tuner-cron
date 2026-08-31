@@ -123,6 +123,7 @@ on:
           - st-partner-fees
           - st-interview-quality-alerts
           - st-ingest-et-visits
+          - st-assessment-maintenance
           - st-run-all
           # BT jobs
           - bt-expire-trials
@@ -199,6 +200,55 @@ jobs:
             curl ${CURL_OPTS} \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.ST_DEPLOY_URL }}/api/cron/dispatch-scheduled"
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # Strategy Tuner — every 15min: manutenzione del funnel assessment
+  #
+  # Due lavori che prima dipendevano dal fatto che una persona aprisse una
+  # pagina della console:
+  #   1. reclaim degli stalli — un deploy che uccide il runner in-process
+  #      lascia i report RUNNING/QUEUED eterni; e' gia' successo in produzione
+  #      (fermo al 75% per undici ore). Un report bloccato che nessuno guarda
+  #      e' un lead perso in silenzio.
+  #   2. auto-invio delle bozze eleggibili, per i funnel che lo hanno acceso
+  #      (spento di default; i presidi stanno nel codice, non qui).
+  #
+  # Riusa lo schedule '*/15' gia' presente invece di aggiungerne uno: la
+  # finestra di intercettazione dell'auto-invio si misura in ore, quindi la
+  # frequenza serve al reclaim, e quindici minuti gli bastano.
+  #
+  # Categoria kill-switch: `maintenance`.
+  # ═══════════════════════════════════════════════════════════════════════
+  st-assessment-maintenance:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-assessment-maintenance' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '*/15 * * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: cron-st-assessment-maintenance
+      # `false` come gli altri job che spediscono: una cancellazione a meta'
+      # corsa potrebbe interrompere l'invio di un report gia' claimato come
+      # SENT, lasciandolo senza email. La corsa dopo arriva fra quindici
+      # minuti, e il claim atomico impedisce comunque il doppio invio.
+      cancel-in-progress: false
+    steps:
+      - name: Assessment Maintenance (ST)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 2
+          retry_wait_seconds: 30
+          # -X POST: la rotta espone SOLO POST (come le altre che scrivono).
+          # Con la GET implicita di curl risponderebbe 405 e il job passerebbe
+          # comunque, perche' --fail non vede un 405 come errore di rete.
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/assessment-maintenance"
 
   # ═══════════════════════════════════════════════════════════════════════
   # Content Tuner — every 15min: dispatch ContentDrafts to connectors
@@ -1261,6 +1311,7 @@ jobs:
       - st-kb-growth
       - st-reset-monthly-counters
       - st-partner-fees
+      - st-assessment-maintenance
     if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     env:
