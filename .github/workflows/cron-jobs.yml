@@ -74,6 +74,7 @@ on:
     # legacy CMSSuggestion rows whose review UI was removed; the canonical
     # suggestion stream is ProjectTip (CrossChannelInsight→tip). Manual
     # workflow_dispatch still available.
+    - cron: '0 6 * * 1'    # Monday 06:00 — lettura periodica pronta (BT)
     - cron: '0 8 * * 1'    # Monday 08:00 — serp monitoring
     - cron: '0 10 * * 1'   # Monday 10:00 — kb-growth
 
@@ -132,6 +133,7 @@ on:
           - bt-source-cadence-reminder
           - bt-governance-emails
           - bt-context-assembly-prune
+          - bt-periodic-reading
           # CT jobs
           - ct-dispatch-scheduled
           - ct-cleanup-media-uploads
@@ -612,6 +614,47 @@ jobs:
             curl ${CURL_OPTS} -X POST \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.BT_DEPLOY_URL }}/api/cron/context-assembly-prune"
+
+  bt-periodic-reading:
+    # GTM-F — emette `PERIODIC_READING_READY` per ogni progetto con
+    # un'organizzazione e un OWNER: «la lettura del periodo e pronta da
+    # guardare». La lettura in se esiste gia e si apre a richiesta; questo job
+    # e la meta che mancava, cioe la periodicita.
+    #
+    # NON genera la sintesi e NON spende crediti. Il paragrafo scritto dal
+    # modello resta subordinato a un atto esplicito di una persona sulla
+    # pagina — di proposito, perche generarlo per ogni progetto ogni settimana
+    # sarebbe una spesa ricorrente che nessuno ha chiesto. Qui parte solo il
+    # richiamo.
+    #
+    # Il retry e sicuro per la stessa ragione di bt-activity-overdue e
+    # bt-source-cadence-reminder: `emitPeriodicReadingReminders` incorpora la
+    # data UTC nella propria eventKey, quindi un secondo giro nello stesso
+    # giorno non produce un secondo richiamo.
+    #
+    # Lunedi 06:00 UTC = 08:00 in Italia d'estate, ed e l'orario che il
+    # monorepo dichiara gia in `BT_CRON_JOBS` (`0 6 * * 1`): sceglierne un
+    # altro qui creerebbe una terza verita sulla stessa cadenza. Lo slot e
+    # libero da quando cms-generate-suggestions e stato ritirato.
+    #
+    # Nessun gate sul preflight di pausa: quello e specifico di Strategy Tuner.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-periodic-reading' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '0 6 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-bt-periodic-reading, cancel-in-progress: false }
+    steps:
+      - name: Periodic Reading Ready (BT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.BT_DEPLOY_URL }}/api/cron/periodic-reading"
 
   bt-governance-emails:
     # D-03 — motore di RITENTATIVO per le email di governance (decisione d'area
