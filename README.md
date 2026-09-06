@@ -38,6 +38,7 @@ is paused.
 | `ST_DEPLOY_URL` | yes | Public base URL of the strategy-tuner deploy (no trailing slash) |
 | `CT_DEPLOY_URL` | yes (for the CT dispatch job) | Public base URL of the content-tuner deploy |
 | `SLACK_CRON_WEBHOOK` | optional | Slack incoming webhook for failure alerts |
+| `VERIFICA_REPO_TOKEN` | yes (for `verifica-monorepo.yml`) | Fine-grained PAT, **Contents: read only**, scoped to `LinosCo/business-tuner` and nothing else |
 
 These are **not** stored in this repo's files — only as encrypted GitHub secrets.
 
@@ -46,6 +47,30 @@ These are **not** stored in this repo's files — only as encrypted GitHub secre
 GitHub disables scheduled workflows after **60 days with no repository activity**.
 If this repo is left untouched, the schedule silently stops. Mitigation: a small
 periodic commit (or the bundled `keepalive` reminder) every < 60 days.
+
+## Monorepo verification (`verifica-monorepo.yml`)
+
+Runs the private monorepo's checks here, where public-repo Actions minutes are free:
+dependencies, Prisma client, migrations from an empty database, migration/schema
+parity, five typechecks, eight test suites, four production builds.
+
+**It prints nothing but the outcome, and that is the point.** This repository is
+public, so its Actions logs and artifacts are readable by anyone without logging in.
+The code being compiled is private: `tsc` quotes the lines around an error, `vitest`
+prints the body of a failing test, `pnpm install` lists internal packages. Every
+command therefore runs with stdout and stderr closed, and the log carries one line
+per phase — green or red. Do not "temporarily" remove a redirection to debug a
+failure: that publishes the source.
+
+When a phase is red, the reason is not here and cannot be. Read it in the private
+repo:
+
+```
+bash scripts/verifica/pr.sh
+```
+
+This is the split the owner chose on 2026-09-06: the signal here, the diagnosis
+there.
 
 ## Source of truth
 
