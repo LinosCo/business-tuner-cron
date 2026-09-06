@@ -34,7 +34,14 @@ on:
   schedule:
     # ── High-Frequency Jobs ──────────────────────────────────────────────
     - cron: '*/10 * * * *' # Every 10 min — signal classification retry
-    - cron: '*/15 * * * *' # Every 15 min — dispatch scheduled (ST + CT)
+    # Ogni 15 min — resta il solo `bt-governance-emails` (ritentativo degli
+    # invii di governance, allineato alla finestra di staleness dei claim).
+    # I tre lavori che stavano qui — st-dispatch-scheduled,
+    # st-assessment-maintenance, ct-dispatch-scheduled — sono passati allo
+    # scheduler interno delle app: su Actions questa cadenza perdeva il 73%
+    # degli inneschi (misura del 2026-09-06), quindi «ogni quindici minuti»
+    # nella pratica erano ore.
+    - cron: '*/15 * * * *'
     - cron: '0 */2 * * *'  # Every 2h — signal ingestion proactive
     - cron: '0 */6 * * *'  # Every 6h — signal ingestion full + ET visit ingest
 
@@ -147,6 +154,23 @@ jobs:
   # Every scheduled ST job gates on its outputs.
   # ═══════════════════════════════════════════════════════════════════════
   st-cron-preflight:
+    # Gira per ogni innesco TRANNE quello dei quindici minuti, e il motivo e'
+    # aritmetico: questo job accende un runner intero per una sola curl, e la
+    # cadenza `*/15` e' la piu' frequente del file — 96 inneschi al giorno.
+    #
+    # Dopo lo spostamento di st-dispatch-scheduled, st-assessment-maintenance
+    # e ct-dispatch-scheduled sullo scheduler interno delle app, sulla `*/15`
+    # resta il solo `bt-governance-emails`, che NON dipende da questo preflight
+    # (la pausa per categoria e' un meccanismo di Strategy Tuner). Un preflight
+    # per nessuno e' un runner acceso per niente, 96 volte al giorno.
+    #
+    # SE UN DOMANI aggiungi un job ST alla cadenza `*/15`, togli questa
+    # condizione: senza preflight quel job non vedrebbe la pausa impostata
+    # dalla console e girerebbe anche da fermo. E' l'unica cosa che questa
+    # riga puo' rompere, quindi e' l'unica da ricordare.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event.schedule != '*/15 * * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     outputs:
@@ -175,10 +199,9 @@ jobs:
   st-dispatch-scheduled:
     needs: st-cron-preflight
     if: >-
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-dispatch-scheduled' || github.event.inputs.job == 'all'))
-      || (github.event.schedule == '*/15 * * * *'
-          && needs.st-cron-preflight.outputs.all != 'true'
-          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'tips'))
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-dispatch-scheduled' || github.event.inputs.job == 'all')
+      && needs.st-cron-preflight.outputs.all != 'true'
+      && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'tips')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
@@ -224,10 +247,9 @@ jobs:
   st-assessment-maintenance:
     needs: st-cron-preflight
     if: >-
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-assessment-maintenance' || github.event.inputs.job == 'all'))
-      || (github.event.schedule == '*/15 * * * *'
-          && needs.st-cron-preflight.outputs.all != 'true'
-          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-assessment-maintenance' || github.event.inputs.job == 'all')
+      && needs.st-cron-preflight.outputs.all != 'true'
+      && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -257,8 +279,7 @@ jobs:
   # ═══════════════════════════════════════════════════════════════════════
   ct-dispatch-scheduled:
     if: >-
-      github.event.schedule == '*/15 * * * *' ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'ct-dispatch-scheduled' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'ct-dispatch-scheduled' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
