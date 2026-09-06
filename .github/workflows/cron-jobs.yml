@@ -40,8 +40,13 @@ on:
     # scheduler interno delle app: su Actions questa cadenza perdeva il 73%
     # degli inneschi (misura del 2026-09-06), quindi «ogni quindici minuti»
     # nella pratica erano ore.
+    #
+    # Per la stessa ragione sono usciti da qui anche st-signal-classify-retry
+    # (era ogni 10 min) e, il 2026-09-06, st-signal-ingestion-proactive (era
+    # ogni 2h: nell'email di salute delle 15:47 risultava a 183 minuti, cioe'
+    # un giro saltato). Restano entrambi richiamabili a mano da
+    # workflow_dispatch.
     - cron: '*/15 * * * *'
-    - cron: '0 */2 * * *'  # Every 2h — signal ingestion proactive
     - cron: '0 */6 * * *'  # Every 6h — signal ingestion full + ET visit ingest
 
     # ── Daily Jobs ────────────────────────────────────────────────────────
@@ -373,15 +378,16 @@ jobs:
               "${{ secrets.ST_DEPLOY_URL }}/api/cron/signal-classify-retry"
 
   # ═══════════════════════════════════════════════════════════════════════
-  # Every 2h — signal ingestion proactive auto-publish
+  # Signal ingestion proactive auto-publish — ogni 2h nello scheduler INTERNO
+  # di Strategy Tuner (lib/cron/internal-jobs.ts). Qui resta solo il richiamo
+  # a mano.
   # ═══════════════════════════════════════════════════════════════════════
   st-signal-ingestion-proactive:
     needs: st-cron-preflight
     if: >-
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-ingestion-proactive' || github.event.inputs.job == 'all'))
-      || (github.event.schedule == '0 */2 * * *'
-          && needs.st-cron-preflight.outputs.all != 'true'
-          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals'))
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-ingestion-proactive' || github.event.inputs.job == 'all')
+      && needs.st-cron-preflight.outputs.all != 'true'
+      && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
