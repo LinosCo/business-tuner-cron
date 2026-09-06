@@ -33,7 +33,6 @@ name: Cron Jobs
 on:
   schedule:
     # ── High-Frequency Jobs ──────────────────────────────────────────────
-    - cron: '*/10 * * * *' # Every 10 min — signal classification retry
     # Ogni 15 min — resta il solo `bt-governance-emails` (ritentativo degli
     # invii di governance, allineato alla finestra di staleness dei claim).
     # I tre lavori che stavano qui — st-dispatch-scheduled,
@@ -168,6 +167,14 @@ jobs:
     # condizione: senza preflight quel job non vedrebbe la pausa impostata
     # dalla console e girerebbe anche da fermo. E' l'unica cosa che questa
     # riga puo' rompere, quindi e' l'unica da ricordare.
+    #
+    # 2026-09-06, poche ore dopo: anche `st-signal-classify-retry` e' passato
+    # allo scheduler interno, e con lui e' sparita la cadenza `*/10` che
+    # serviva solo a lui. Restano quindi 144 inneschi al giorno in meno, oltre
+    # ai 96 preflight gia' tolti qui sopra. La prova che ha deciso lo
+    # spostamento sta nell'email di salute delle 12:49: i due lavori gia'
+    # interni erano a 15 minuti su una cadenza di 15, questo era a 121 su una
+    # cadenza di 10.
     if: >-
       github.event_name == 'workflow_dispatch'
       || github.event.schedule != '*/15 * * * *'
@@ -345,10 +352,9 @@ jobs:
   st-signal-classify-retry:
     needs: st-cron-preflight
     if: >-
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-classify-retry' || github.event.inputs.job == 'all'))
-      || (github.event.schedule == '*/10 * * * *'
-          && needs.st-cron-preflight.outputs.all != 'true'
-          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals'))
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-signal-classify-retry' || github.event.inputs.job == 'all')
+      && needs.st-cron-preflight.outputs.all != 'true'
+      && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'signals')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
