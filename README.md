@@ -72,6 +72,12 @@ bash scripts/verifica/pr.sh
 This is the split the owner chose on 2026-09-06: the signal here, the diagnosis
 there.
 
+On a failed verification, `notify-on-failure` in the **same workflow** sends the
+usual generic alert to `SLACK_CRON_WEBHOOK`, when that optional secret is set. The
+message contains only this public repository and its Actions run link—never a phase
+name, command output, or private-repository detail. The notification job has no
+GitHub token permissions.
+
 The checkout uses the private half of a dedicated ed25519 deploy key. The public
 half is attached to `LinosCo/business-tuner` with read-only permission, so this
 workflow can fetch the target ref but cannot modify the monorepo. The private

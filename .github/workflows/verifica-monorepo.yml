@@ -68,7 +68,7 @@ jobs:
       postgres:
         # pgvector e non postgres liscio: la prima migration apre con
         # `CREATE EXTENSION vector`. Stessa immagine della CI del repo privato.
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b # pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -90,7 +90,7 @@ jobs:
 
     steps:
       - name: Prendi il codice privato
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: LinosCo/business-tuner
           ref: ${{ inputs.ref || 'ph3-0-bt-into-monorepo' }}
@@ -98,11 +98,11 @@ jobs:
           path: monorepo
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9.15.4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -209,6 +209,30 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Il job fallisce quando qualcosa e' rosso: e' il segnale che
-          # `notify-on-failure` (cron-jobs.yml) sa gia' leggere.
+          # Il job fallisce quando qualcosa e' rosso: il job
+          # `notify-on-failure` qui sotto riceve il suo risultato via `needs`.
           [ "${rossi:-1}" = "0" ]
+
+  # Deve stare nello stesso workflow di `verifica`: i `needs` non attraversano
+  # workflow diversi, quindi il notify-on-failure di cron-jobs.yml non puo'
+  # osservare questo risultato.
+  notify-on-failure:
+    needs: verifica
+    if: always() && needs.verifica.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    # Questo job invia soltanto il webhook Slack: non gli serve un GITHUB_TOKEN.
+    permissions: {}
+    env:
+      SLACK_CRON_WEBHOOK: ${{ secrets.SLACK_CRON_WEBHOOK }}
+    steps:
+      - name: Notify Slack
+        run: |
+          if [ -z "${SLACK_CRON_WEBHOOK}" ]; then
+            echo "SLACK_CRON_WEBHOOK is not configured — skipping notification."
+            exit 0
+          fi
+          curl --fail --silent --show-error \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"Monorepo verification failure in ${GITHUB_REPOSITORY} (run ${GITHUB_RUN_ID}). See https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
+            "${SLACK_CRON_WEBHOOK}"
