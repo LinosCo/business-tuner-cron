@@ -1,0 +1,238 @@
+# Verifica del monorepo privato, eseguita qui perche' i minuti Actions di un
+# repository pubblico sono gratuiti.
+#
+# ── Il vincolo che decide la forma di questo file ──────────────────────────
+#
+# Questo repository e' PUBBLICO. I log delle Actions e gli artifact di un repo
+# pubblico li legge chiunque, senza autenticazione. Il codice che questo
+# workflow compila e' privato: l'output di `tsc` cita i frammenti attorno a un
+# errore, quello di `vitest` stampa il corpo dei test falliti, `pnpm install`
+# elenca i pacchetti interni. Lasciar scorrere quell'output nei log
+# significherebbe pubblicare il sorgente, in modo irreversibile e senza
+# accorgersene.
+#
+# Quindi: **ogni comando ha stdout e stderr chiusi**, e l'unica cosa che
+# finisce nel log e' una riga per fase, verde o rossa. Non e' una precauzione
+# eccessiva, e' la condizione perche' questo workflow possa esistere qui.
+#
+# Cosa resta visibile, e va bene: i NOMI delle fasi e i percorsi delle
+# applicazioni (`apps/content-tuner`, `packages/db`), che stanno gia' scritti
+# in questo file pubblico. Sono struttura, non contenuto.
+#
+# ── Cosa fare quando e' rosso ──────────────────────────────────────────────
+#
+# Questo workflow dice CHE COSA e' rotto, mai perche'. Il perche' si legge
+# lanciando `scripts/verifica/pr.sh` nel repository privato, in una sessione:
+# fa gli stessi controlli e li mostra per intero. La divisione e' voluta —
+# qui il segnale, li' la diagnosi.
+#
+# ── La deploy key ──────────────────────────────────────────────────────────
+#
+# `VERIFICA_REPO_DEPLOY_KEY` e' la chiave privata ed25519 dedicata a questo
+# checkout. La sua chiave pubblica e' registrata su `LinosCo/business-tuner`
+# come deploy key **sola lettura**: non concede accesso ad altri repository e
+# non puo' scrivere nel monorepo. I secret di un repository pubblico NON sono
+# esposti ai fork ne' alle pull request esterne, e questo workflow non si attiva
+# su `pull_request`: solo a orario e a mano, cioe' solo per chi ha gia' accesso
+# in scrittura qui.
+
+name: Verifica monorepo (solo esito)
+
+on:
+  schedule:
+    # Una volta al giorno, alle 04:20 UTC. Non a ogni push: il segnale utile e'
+    # "il ramo di lavoro e' integro stamattina", non "questo commit e' integro"
+    # — quello lo dice gia' la verifica in sessione prima del merge.
+    - cron: '20 4 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ramo o commit del monorepo da verificare'
+        required: false
+        default: 'ph3-0-bt-into-monorepo'
+
+concurrency:
+  group: verifica-monorepo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verifica:
+    name: Verifica
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      postgres:
+        # pgvector e non postgres liscio: la prima migration apre con
+        # `CREATE EXTENSION vector`. Stessa immagine della CI del repo privato.
+        image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b # pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: voler_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Il nome DEVE contenere "test": il setup dei test di content-tuner si
+      # rifiuta di girare su un database che non lo contiene, di proposito.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/voler_test
+      SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/voler_shadow
+      # Il typecheck e il build di content-tuner superano l'heap di default.
+      NODE_OPTIONS: --max-old-space-size=8192
+
+    steps:
+      - name: Prendi il codice privato
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: LinosCo/business-tuner
+          ref: ${{ inputs.ref || 'ph3-0-bt-into-monorepo' }}
+          ssh-key: ${{ secrets.VERIFICA_REPO_DEPLOY_KEY }}
+          path: monorepo
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Esegui le fasi e riporta solo l'esito
+        id: fasi
+        working-directory: monorepo
+        run: |
+          set -uo pipefail   # NON -e: ogni fase deve poter fallire senza fermare le altre
+          rossi=0
+
+          # L'unica funzione di questo file. `>/dev/null 2>&1` non e' pigrizia:
+          # e' il motivo per cui questo workflow puo' girare su un repository
+          # pubblico senza pubblicare il codice che verifica.
+          fase() {
+            local nome="$1"; shift
+            if "$@" >/dev/null 2>&1; then
+              echo "verde   $nome"
+            else
+              echo "ROSSO   $nome"
+              rossi=$((rossi + 1))
+              echo "$nome" >> "$RUNNER_TEMP/rossi.txt"
+            fi
+          }
+
+          fase "dipendenze"                pnpm install --frozen-lockfile
+          fase "client prisma"             pnpm --filter @voler/db exec prisma generate
+          fase "migrazioni da vuoto"       pnpm --filter @voler/db exec prisma migrate deploy
+
+          # Allestimento, non una fase: il database vuoto in cui il controllo
+          # sotto replaya le migration. Prisma legge questo URL da
+          # prisma.config.ts, quindi la variabile d'ambiente da sola non basta.
+          PGPASSWORD=postgres psql -h localhost -U postgres -d postgres \
+            -c 'CREATE DATABASE voler_shadow;' >/dev/null 2>&1 || true
+
+          # Il passo sopra dimostra che le migration GIRANO; questo che
+          # continuano a dare esattamente schema.prisma. `migrate deploy` non
+          # puo' accorgersi che una modifica allo schema e' stata mergiata
+          # senza la sua migration.
+          fase "migrazioni fedeli allo schema" \
+            pnpm --filter @voler/db exec prisma migrate diff \
+              --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code
+
+          fase "typecheck content-tuner"   pnpm --filter content-tuner exec tsc --noEmit
+          fase "typecheck strategy-tuner"  pnpm --filter strategy-tuner exec tsc --noEmit --skipLibCheck
+          fase "typecheck business-tuner"  pnpm --filter business-tuner exec tsc --noEmit
+          fase "typecheck experience-tuner" pnpm --filter experience-tuner typecheck
+          fase "typecheck @voler/db"       pnpm --filter @voler/db typecheck
+
+          # L'elenco e' esplicito, come nella CI del repo privato: un pacchetto
+          # nuovo NON entra da solo, e se ne aggiungi uno con dei test va
+          # aggiunto anche qui. Un filtro a stella nasconderebbe un pacchetto
+          # senza script `test` invece di farlo notare.
+          fase "test @voler/ai"            pnpm --filter @voler/ai test
+          fase "test @voler/billing"       pnpm --filter @voler/billing test
+          fase "test @voler/db"            pnpm --filter @voler/db test
+          fase "test @voler/brand-system"  pnpm --filter @voler/brand-system test
+          fase "test @voler/brand-voice"   pnpm --filter @voler/brand-voice test
+          fase "test strategy-tuner"       pnpm --filter strategy-tuner test
+          fase "test business-tuner"       pnpm --filter business-tuner test
+          # Allestimento: i test di rendering di content-tuner girano contro un
+          # Chromium vero. Senza, quella fase sarebbe rossa per un browser che
+          # manca, e un rosso che non c'entra col codice e' peggio di nessun
+          # rosso — qui in piu' non si potrebbe nemmeno leggere perche'.
+          pnpm --filter content-tuner exec playwright install-deps chromium >/dev/null 2>&1 || true
+          pnpm --filter content-tuner exec playwright install chromium >/dev/null 2>&1 || true
+
+          # `--testTimeout=30000`: alcuni test su database falliscono solo sotto
+          # contesa di worker su un runner freddo, mai isolati (analisi PR
+          # #978). Un test davvero rotto continua a fallire, solo non per il
+          # cronometro.
+          fase "test content-tuner"        pnpm --filter content-tuner exec vitest run --testTimeout=30000
+
+          fase "build content-tuner"       pnpm --filter content-tuner build
+          fase "build business-tuner"      pnpm --filter business-tuner build
+          fase "build strategy-tuner"      pnpm --filter strategy-tuner build
+          fase "build experience-tuner"    pnpm --filter experience-tuner build
+
+          echo "rossi=$rossi" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Riassunto
+        if: always()
+        run: |
+          set -uo pipefail
+          rossi="${{ steps.fasi.outputs.rossi }}"
+          {
+            echo "## Verifica del monorepo"
+            echo
+            if [ "${rossi:-1}" = "0" ]; then
+              echo "Tutte le fasi sono verdi."
+            else
+              echo "Fasi rosse: **${rossi}**"
+              echo
+              if [ -f "$RUNNER_TEMP/rossi.txt" ]; then
+                sed 's/^/- /' "$RUNNER_TEMP/rossi.txt"
+                echo
+              fi
+              echo "Il motivo non e' qui e non puo' esserlo: i log di questo repository sono pubblici."
+              echo "Per il dettaglio, nel repository privato:"
+              echo
+              echo '```'
+              echo 'bash scripts/verifica/pr.sh'
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Il job fallisce quando qualcosa e' rosso: il job
+          # `notify-on-failure` qui sotto riceve il suo risultato via `needs`.
+          [ "${rossi:-1}" = "0" ]
+
+  # Deve stare nello stesso workflow di `verifica`: i `needs` non attraversano
+  # workflow diversi, quindi il notify-on-failure di cron-jobs.yml non puo'
+  # osservare questo risultato.
+  notify-on-failure:
+    needs: verifica
+    if: always() && needs.verifica.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    # Questo job invia soltanto il webhook Slack: non gli serve un GITHUB_TOKEN.
+    permissions: {}
+    env:
+      SLACK_CRON_WEBHOOK: ${{ secrets.SLACK_CRON_WEBHOOK }}
+    steps:
+      - name: Notify Slack
+        run: |
+          if [ -z "${SLACK_CRON_WEBHOOK}" ]; then
+            echo "SLACK_CRON_WEBHOOK is not configured — skipping notification."
+            exit 0
+          fi
+          curl --fail --silent --show-error \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"Monorepo verification failure in ${GITHUB_REPOSITORY} (run ${GITHUB_RUN_ID}). See https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
+            "${SLACK_CRON_WEBHOOK}"
