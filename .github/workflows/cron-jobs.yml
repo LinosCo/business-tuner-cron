@@ -200,6 +200,17 @@ jobs:
             echo "::warning::pause-status unreachable — fail-open (nothing paused)"
             echo "all=false" >> "$GITHUB_OUTPUT"
             echo "paused=[]" >> "$GITHUB_OUTPUT"
+          elif ! jq -e . >/dev/null 2>&1 <<<"$resp"; then
+            # curl succeeded (2xx, or a 3xx it didn't follow) but the body isn't
+            # JSON — e.g. an auth-wall redirect to /signin instead of the
+            # expected {all,categories} payload. Without this branch, both jq
+            # calls below fail silently, `paused` ends up empty/malformed, and
+            # every job gated on fromJson(...paused) is skipped with no signal
+            # (skipped != failure, so notify-on-failure never fires). Treat it
+            # the same as unreachable, but log distinctly so it's visible.
+            echo "::warning::pause-status returned non-JSON body — fail-open (nothing paused)"
+            echo "all=false" >> "$GITHUB_OUTPUT"
+            echo "paused=[]" >> "$GITHUB_OUTPUT"
           else
             echo "all=$(echo "$resp" | jq -r '.all')" >> "$GITHUB_OUTPUT"
             echo "paused=$(echo "$resp" | jq -c '.categories')" >> "$GITHUB_OUTPUT"
