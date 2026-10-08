@@ -73,6 +73,7 @@ on:
     - cron: '0 10 * * *'   # 10:00 UTC — performance backfill
     - cron: '0 11 * * *'   # 11:00 UTC — signals/reclassify-pending
     - cron: '30 11 * * *'  # 11:30 UTC — relazioni osservate del Brain (BT)
+    - cron: '0 14 * * *'   # 14:00 UTC (16:00 in Italia) — seguiti dei corsi di Formazione (ST)
     # 07:15 UTC — revisione programmata dei lavori dell'assistente (BT).
     # TENUTA SPENTA di proposito: la rotta `/api/cron/assistant-review` esiste
     # solo nel ramo `assistant-v2` del monorepo (PR LinosCo/business-tuner#1462) e
@@ -145,6 +146,7 @@ on:
           - st-interview-quality-alerts
           - st-ingest-et-visits
           - st-assessment-maintenance
+          - st-training-reviews
           - st-run-all
           # BT jobs
           - bt-expire-trials
@@ -1498,6 +1500,33 @@ jobs:
   # ═══════════════════════════════════════════════════════════════════════
   # Failure alerting — runs once after the rest of the job graph completes
   # ═══════════════════════════════════════════════════════════════════════
+  st-training-reviews:
+    # Seguiti dei corsi di Formazione (a 2 giorni e a 2 settimane dalla fine del corso):
+    # invia per email il link per rispondere. Idempotente: un seguito non inviabile resta
+    # `scheduled` e riparte al giro dopo, e ogni invio porta una chiave di idempotenza.
+    # Una volta al giorno basta, le scadenze sono a giorni di distanza.
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-training-reviews' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 14 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency: { group: cron-st-training-reviews, cancel-in-progress: false }
+    steps:
+      - name: Training Reviews
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} \
+              -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/training-reviews"
+
   notify-on-failure:
     needs:
       - st-cron-preflight
@@ -1550,6 +1579,7 @@ jobs:
       - st-reset-monthly-counters
       - st-partner-fees
       - st-assessment-maintenance
+      - st-training-reviews
     if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     env:
