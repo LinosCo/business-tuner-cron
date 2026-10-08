@@ -72,6 +72,15 @@ on:
     - cron: '30 9 * * *'   # 09:30 UTC — potatura assemblaggi di contesto orfani (BT)
     - cron: '0 10 * * *'   # 10:00 UTC — performance backfill
     - cron: '0 11 * * *'   # 11:00 UTC — signals/reclassify-pending
+    - cron: '30 11 * * *'  # 11:30 UTC — relazioni osservate del Brain (BT)
+    # 07:15 UTC — revisione programmata dei lavori dell'assistente (BT).
+    # TENUTA SPENTA di proposito: la rotta `/api/cron/assistant-review` esiste
+    # solo nel ramo `assistant-v2` del monorepo (PR LinosCo/business-tuner#1462) e
+    # non e' ancora distribuita; chiamarla ora darebbe 404 ogni giorno e
+    # un avviso Slack per niente. Appena la PR e' in produzione, togli il `#`
+    # qui sotto E dall'`if` di `bt-assistant-review`. Nel frattempo si puo'
+    # lanciare a mano da workflow_dispatch.
+    # - cron: '15 7 * * *'
 
     # ── Every 3 days ──────────────────────────────────────────────────────
     - cron: '0 12 */3 * *' # Every 3 days 12:00 UTC — market themes + positioning
@@ -145,6 +154,10 @@ on:
           - bt-governance-emails
           - bt-context-assembly-prune
           - bt-periodic-reading
+          - bt-assistant-run
+          - bt-kb-extract-followup
+          - bt-observed-relations
+          - bt-assistant-review
           # CT jobs
           - ct-dispatch-scheduled
           - ct-cleanup-media-uploads
@@ -739,6 +752,151 @@ jobs:
             curl ${CURL_OPTS} -X POST \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.BT_DEPLOY_URL }}/api/cron/governance-emails"
+
+  bt-assistant-run:
+    # Assistente e Dashboard, fase 3B: la rete di sicurezza del motore dei
+    # lavori dell'assistente. Il motore parte da solo (`after()` dopo ogni
+    # risposta e dopo ogni passo il successivo), ma `after()` vive quanto il
+    # processo: un deploy a meta', un container riciclato, e il lavoro resta
+    # fermo dove si trovava. Questa rotta riprende i passi appesi, fa ripartire
+    # i lavori fermi per i crediti quando sono tornati e avanza i lavori in
+    # coda. Fino a oggi la chiamava solo la rotta stessa su richiesta: la
+    # rete di sicurezza non aveva nessuno che la tirasse.
+    #
+    # Il retry HTTP e' sicuro: un passo ha un solo giro per volta (lease) e
+    # un giro in piu' non ripete lavoro gia' fatto. La rotta risponde subito
+    # con quanti lavori ha toccato; il lavoro vero e' differito.
+    #
+    # Cadenza `*/15` e non `*/10` come proponeva `BT_CRON_JOBS`: e' la stessa
+    # di `bt-governance-emails`, quindi non aggiunge un innesco al file, e su
+    # Actions una cadenza piu' stretta perde comunque la maggior parte degli
+    # inneschi (misura del 2026-09-06, vedi l'intestazione). Per una rete di
+    # sicurezza e' sufficiente; per questo la cadenza dichiarata nel monorepo
+    # va allineata a 15.
+    #
+    # Nessun gate sul preflight di pausa: quello e' specifico di Strategy Tuner.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-assistant-run' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '*/15 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Come `bt-governance-emails`: superare una corsa vecchia e' la semantica
+    # giusta, la corsa successiva riprende da dove si era fermata.
+    concurrency: { group: cron-bt-assistant-run, cancel-in-progress: true }
+    steps:
+      - name: Assistant Run safety net (BT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.BT_DEPLOY_URL }}/api/cron/assistant-run" > /dev/null
+
+  bt-kb-extract-followup:
+    # Task E9, estrattore: completa i passi solo-BT (proposta del ruolo della
+    # fonte, passata sulle divergenze) dei `kb_extract` che il runner di Content
+    # Tuner ha chiuso senza poterli fare. Senza questo giro una lettura finita
+    # in CT resta senza ruolo proposto e senza passata sul Brain.
+    #
+    # Il retry HTTP e' sicuro: ogni job viene preso una volta sola dal suo
+    # stato, un secondo giro trova niente da fare. Cadenza `*/15`: una lettura
+    # finita aspetta al piu' un quarto d'ora il suo seguito.
+    #
+    # Nessun gate sul preflight di pausa: quello e' specifico di Strategy Tuner.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-kb-extract-followup' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '*/15 * * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency: { group: cron-bt-kb-extract-followup, cancel-in-progress: true }
+    steps:
+      - name: KB Extract Followup (BT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 4
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.BT_DEPLOY_URL }}/api/cron/kb-extract-followup" > /dev/null
+
+  bt-observed-relations:
+    # Relazioni del Brain, task 13 (spec 2026-09-22 §11.3): dal lavoro approvato
+    # o pubblicato propone relazioni `usati_insieme` e `citato_per` e rinforza
+    # con una prova quelle gia' note. Solo Postgres, nessun fornitore, nessun
+    # credito, nessun ritiro automatico di relazioni.
+    #
+    # La rotta elabora i progetti uno alla volta sotto un tetto di tempo e
+    # riporta `projectsRemaining`: quando resta qualcosa, qui si richiama (al
+    # massimo 5 giri) finche' non resta niente, come prevede la rotta.
+    # Si stampa soltanto quanti ne restano: questo repository e' pubblico e
+    # la risposta contiene dati dei progetti.
+    #
+    # Il retry e' sicuro: lo sweep propone e rinforza, non ritira nulla, e
+    # una proposta gia' fatta non si ripete.
+    #
+    # 11:30 UTC e non 11:00: lo slot delle 11:00 e' di
+    # signals/reclassify-pending e due job con lo stesso innesco si
+    # distinguono solo dall'`if`, quindi tenerli separati evita che un
+    # cambiamento dell'uno tocchi l'altro.
+    #
+    # Nessun gate sul preflight di pausa: quello e' specifico di Strategy Tuner.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-observed-relations' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '30 11 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: { group: cron-bt-observed-relations, cancel-in-progress: false }
+    steps:
+      - name: Observed Relations (BT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 14
+          max_attempts: 2
+          retry_wait_seconds: 30
+          command: |
+            for giro in 1 2 3 4 5; do
+              risposta=$(curl ${CURL_OPTS} -X POST \
+                -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+                "${{ secrets.BT_DEPLOY_URL }}/api/cron/observed-relations")
+              restanti=$(printf '%s' "$risposta" | jq -r '.projectsRemaining // 0')
+              echo "giro ${giro}: progetti rimasti ${restanti}"
+              [ "${restanti}" = "0" ] && break
+            done
+
+  bt-assistant-review:
+    # V2-2: la revisione programmata dei lavori dell'assistente. Per ogni
+    # lavoro consegnato la cui data di revisione e' arrivata scrive l'evento
+    # `ASSISTANT_REVIEW_READY` nel registro del progetto. Nessuna lettura
+    # esterna, nessun modello, nessun credito, nessuna email.
+    #
+    # Il retry e' sicuro: l'evento e' idempotente per lavoro e scadenza.
+    #
+    # DA ATTIVARE alla distribuzione di LinosCo/business-tuner#1462: la rotta
+    # non esiste ancora in produzione. Fino ad allora solo workflow_dispatch;
+    # per attivarlo, decommenta la riga `- cron: '15 7 * * *'` in cima e la
+    # condizione di schedule qui sotto.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-assistant-review' || github.event.inputs.job == 'all'))
+      # || github.event.schedule == '15 7 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency: { group: cron-bt-assistant-review, cancel-in-progress: false }
+    steps:
+      - name: Assistant Review (BT)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 9
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: |
+            curl ${CURL_OPTS} -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.BT_DEPLOY_URL }}/api/cron/assistant-review" > /dev/null
 
   st-aggregate-chatbot-analytics:
     needs: st-cron-preflight
@@ -1356,6 +1514,10 @@ jobs:
       - bt-audit-retention-cleanup
       - bt-activity-overdue
       - bt-source-cadence-reminder
+      - bt-assistant-run
+      - bt-kb-extract-followup
+      - bt-observed-relations
+      - bt-assistant-review
       - ct-cleanup-media-uploads
       - st-signal-classify-retry
       - st-signal-ingestion-proactive
