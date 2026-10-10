@@ -880,11 +880,14 @@ jobs:
     #
     # DA ATTIVARE alla distribuzione di LinosCo/business-tuner#1462: la rotta
     # non esiste ancora in produzione. Fino ad allora solo workflow_dispatch;
-    # per attivarlo, decommenta la riga `- cron: '15 7 * * *'` in cima e la
-    # condizione di schedule qui sotto.
+    # per attivarlo, decommenta la riga `- cron: '15 7 * * *'` in cima e
+    # aggiungi in fondo alla condizione qui sotto:
+    #   || github.event.schedule == '15 7 * * *'
+    # Il commento sta fuori dal blocco `>-` di proposito: dentro, il `#` e'
+    # testo e finisce nell'espressione, che GitHub rifiuta scartando l'intero
+    # file (e con lui tutti i cron di questo workflow).
     if: >-
       (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-assistant-review' || github.event.inputs.job == 'all'))
-      # || github.event.schedule == '15 7 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency: { group: cron-bt-assistant-review, cancel-in-progress: false }
