@@ -61,7 +61,7 @@ on:
     - cron: '0 4 * * *'    # 04:00 UTC — performance snapshot + check alerts
     - cron: '30 4 * * *'   # 04:30 UTC — interview quality alerts
     - cron: '0 5 * * *'    # 05:00 UTC — signal ingestion trends
-    - cron: '30 5 * * *'   # 05:30 UTC — richiami attivita scadute (BT)
+    - cron: '30 5 * * *'   # 05:30 UTC — richiami attivita scadute (BT) + tip performance (ST, dopo lo snapshot delle 04:00)
     - cron: '0 6 * * *'    # 06:00 UTC — tip verify
     - cron: '30 6 * * *'   # 06:30 UTC — gap-to-content
     - cron: '0 7 * * *'    # 07:00 UTC — signal cleanup
@@ -74,14 +74,7 @@ on:
     - cron: '0 11 * * *'   # 11:00 UTC — signals/reclassify-pending
     - cron: '30 11 * * *'  # 11:30 UTC — relazioni osservate del Brain (BT)
     - cron: '0 14 * * *'   # 14:00 UTC (16:00 in Italia) — seguiti dei corsi di Formazione (ST)
-    # 07:15 UTC — revisione programmata dei lavori dell'assistente (BT).
-    # TENUTA SPENTA di proposito: la rotta `/api/cron/assistant-review` esiste
-    # solo nel ramo `assistant-v2` del monorepo (PR LinosCo/business-tuner#1462) e
-    # non e' ancora distribuita; chiamarla ora darebbe 404 ogni giorno e
-    # un avviso Slack per niente. Appena la PR e' in produzione, togli il `#`
-    # qui sotto E dall'`if` di `bt-assistant-review`. Nel frattempo si puo'
-    # lanciare a mano da workflow_dispatch.
-    # - cron: '15 7 * * *'
+    - cron: '15 7 * * *'   # 07:15 UTC — revisione programmata dei lavori dell'assistente (BT), dietro ASSISTANT_REVIEW_ENABLED
 
     # ── Every 3 days ──────────────────────────────────────────────────────
     - cron: '0 12 */3 * *' # Every 3 days 12:00 UTC — market themes + positioning
@@ -878,16 +871,16 @@ jobs:
     #
     # Il retry e' sicuro: l'evento e' idempotente per lavoro e scadenza.
     #
-    # DA ATTIVARE alla distribuzione di LinosCo/business-tuner#1462: la rotta
-    # non esiste ancora in produzione. Fino ad allora solo workflow_dispatch;
-    # per attivarlo, decommenta la riga `- cron: '15 7 * * *'` in cima e
-    # aggiungi in fondo alla condizione qui sotto:
-    #   || github.event.schedule == '15 7 * * *'
+    # Schedulato ogni giorno alle 07:15 UTC (30/10/2026, LinosCo/business-tuner#1808).
+    # La rotta ha il suo interruttore: finche' sul servizio business-tuner non c'e'
+    # ASSISTANT_REVIEW_ENABLED=true risponde 200 `{ skipped: "disabled" }` senza
+    # leggere ne' scrivere, quindi lo schedule acceso non produce avvisi.
     # Il commento sta fuori dal blocco `>-` di proposito: dentro, il `#` e'
     # testo e finisce nell'espressione, che GitHub rifiuta scartando l'intero
     # file (e con lui tutti i cron di questo workflow).
     if: >-
       (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'bt-assistant-review' || github.event.inputs.job == 'all'))
+      || github.event.schedule == '15 7 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency: { group: cron-bt-assistant-review, cancel-in-progress: false }
@@ -1279,8 +1272,17 @@ jobs:
               "${{ secrets.ST_DEPLOY_URL }}/api/cron/tip-lifecycle"
 
   st-tip-performance:
+    # «Cio' che ho approvato ha funzionato»: misura le pagine dei tip approvati con
+    # le giornate di GoogleConnection (LinosCo/business-tuner#1808). Gira alle 05:30,
+    # dopo `st-performance-snapshot` (04:00): se le giornate non ci sono ancora non
+    # scrive niente e riprova il giorno dopo. Stesso interruttore di pausa degli
+    # altri lavori di manutenzione di ST.
+    needs: st-cron-preflight
     if: >-
-      github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-tip-performance' || github.event.inputs.job == 'all')
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-tip-performance' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '30 5 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'maintenance'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency: { group: cron-st-tip-performance, cancel-in-progress: false }
