@@ -125,6 +125,7 @@ on:
           - st-gap-to-content
           - st-sync-insights
           - st-serp-monitoring
+          - st-visibility-scheduled
           - st-market-themes
           - st-kb-growth
           - st-tip-verify
@@ -1406,6 +1407,28 @@ jobs:
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               "${{ secrets.ST_DEPLOY_URL }}/api/cron/serp-monitoring"
 
+  st-visibility-scheduled:
+    needs: st-cron-preflight
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'st-visibility-scheduled' || github.event.inputs.job == 'all'))
+      || (github.event.schedule == '0 */6 * * *'
+          && needs.st-cron-preflight.outputs.all != 'true'
+          && !contains(fromJson(needs.st-cron-preflight.outputs.paused), 'market'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: { group: cron-st-visibility-scheduled, cancel-in-progress: false }
+    steps:
+      - name: Lettura programmata dei modelli (ChatGPT, Claude, Gemini)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 18
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            curl ${CURL_OPTS} \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.ST_DEPLOY_URL }}/api/cron/visibility-scheduled"
+
   st-kb-growth:
     needs: st-cron-preflight
     if: >-
@@ -1579,6 +1602,7 @@ jobs:
       - st-sync-insights
       - st-cms-generate-suggestions
       - st-serp-monitoring
+      - st-visibility-scheduled
       - st-market-themes
       - st-kb-growth
       - st-reset-monthly-counters
